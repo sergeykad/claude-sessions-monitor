@@ -612,10 +612,24 @@ type parsedLog struct {
 // live view needs. It replaces three separate full-file passes (readLastEntries,
 // QuickSessionStats, extractSummary) that parseSession previously made.
 //
+// maxLogLineBytes bounds a single JSONL line bufio.Scanner will accept before
+// aborting the scan. The largest line observed in real logs is ~1.2MB, so
+// 10MB leaves ample headroom without a raise that has no evidence behind it
+// -- see cachedParseLogFile for why hitting this limit no longer means losing
+// every entry already parsed before it.
+const maxLogLineBytes = 10 * 1024 * 1024
+
 // It keeps the last `keep` fully-parsed entries (for status/usage/message
 // extraction, which need Message.Content and Usage), while capturing the
 // early-file metadata (cwd, title) and the most recent summary in the same pass.
 func parseLogFile(logFile string, keep int) (parsedLog, error) {
+	return parseLogFileWithLimit(logFile, keep, maxLogLineBytes)
+}
+
+// parseLogFileWithLimit is parseLogFile with the scanner's max-line-size made
+// an explicit parameter, so tests can reproduce an oversized-line scan error
+// without allocating a real maxLogLineBytes-sized line.
+func parseLogFileWithLimit(logFile string, keep int, maxLineBytes int) (parsedLog, error) {
 	file, err := os.Open(logFile)
 	if err != nil {
 		return parsedLog{}, err
@@ -626,8 +640,15 @@ func parseLogFile(logFile string, keep int) (parsedLog, error) {
 	var entries []LogEntry
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // 10MB max line
+	// The initial buffer's capacity must not exceed maxLineBytes: bufio.Scanner
+	// only grows a token buffer when it needs to, so a capacity already bigger
+	// than maxLineBytes would let a token past that limit through untouched.
+	initialBufSize := 64 * 1024
+	if maxLineBytes < initialBufSize {
+		initialBufSize = maxLineBytes
+	}
+	buf := make([]byte, 0, initialBufSize)
+	scanner.Buffer(buf, maxLineBytes)
 
 	for scanner.Scan() {
 		line := scanner.Text()

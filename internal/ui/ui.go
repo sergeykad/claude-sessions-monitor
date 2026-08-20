@@ -42,31 +42,37 @@ func RenderList(sessions []session.Session) {
 	l := calcSessionLayout(getTerminalWidth())
 
 	var buf strings.Builder
-	buf.WriteString(sessionHeader(l) + "\n")
+	buf.WriteString(sessionHeader(l, "") + "\n")
 	buf.WriteString(strings.Repeat("─", l.totalWidth) + "\n")
 
 	for _, s := range sessions {
-		renderSessionRow(&buf, s, l, "\n")
+		renderSessionRow(&buf, s, l, "\n", "")
 	}
 
 	fmt.Print(buf.String())
 }
 
 // sessionHeader returns the column header row matching the given layout.
-func sessionHeader(l sessionLayout) string {
+// gutter is the same left-edge padding the rows use, so the columns line up:
+// unselectedMarker in the live view, "" for one-shot output that has no
+// selection to show.
+func sessionHeader(l sessionLayout, gutter string) string {
+	activity := l.activity - len([]rune(gutter))
 	if l.origin > 0 {
-		return fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
+		return fmt.Sprintf("%s%-*s %-*s %-*s %-*s %-*s",
+			gutter,
 			l.status, "STATUS",
 			l.project, "PROJECT",
 			l.origin, "ORIGIN",
 			l.context, "CONTEXT",
-			l.activity, "LAST ACTIVITY")
+			activity, "LAST ACTIVITY")
 	}
-	return fmt.Sprintf("%-*s %-*s %-*s %-*s",
+	return fmt.Sprintf("%s%-*s %-*s %-*s %-*s",
+		gutter,
 		l.status, "STATUS",
 		l.project, "PROJECT",
 		l.context, "CONTEXT",
-		l.activity, "LAST ACTIVITY")
+		activity, "LAST ACTIVITY")
 }
 
 // RenderJSON renders sessions as JSON
@@ -83,10 +89,34 @@ func RenderJSON(sessions []session.Session) error {
 // some terminals show on every refresh tick.
 const rawNewline = "\033[K\r\n"
 
-// RenderLive renders the live dashboard view
-// Uses \r\n for newlines to work correctly in raw terminal mode
+// Selection marker drawn in the left gutter of the highlighted row. The gutter
+// is the same width whether or not a row is selected, so moving the cursor
+// never reflows the table.
+const (
+	selectedMarker   = "\u258c "
+	unselectedMarker = "  "
+)
+
+// ActiveSessions returns the sessions the live view shows: everything that
+// isn't finished or orphaned. Callers that need to address a row by index must
+// use this, so the selection and the rendered table can't disagree.
+func ActiveSessions(sessions []session.Session) []session.Session {
+	var active []session.Session
+	for _, s := range sessions {
+		if s.IsGhost || s.Status == session.StatusInactive {
+			continue
+		}
+		active = append(active, s)
+	}
+	return active
+}
+
+// RenderLive renders the live dashboard view.
+// Uses \r\n for newlines to work correctly in raw terminal mode.
 // If webURL is non-empty, the web dashboard shortcut is shown in the footer.
-func RenderLive(sessions []session.Session, webURL string, claudeStatus *session.ClaudeStatus) {
+// selected is an index into ActiveSessions(sessions), or -1 for no selection.
+// jumpMsg is one line of feedback from the last jump attempt, or "" for none.
+func RenderLive(sessions []session.Session, webURL string, claudeStatus *session.ClaudeStatus, selected int, jumpMsg string) {
 	// Set terminal title with status summary
 	SetTerminalTitle(buildTerminalTitle(sessions))
 
@@ -105,15 +135,7 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 	// Header
 	fmt.Fprintf(&buf, "%sClaude Code Sessions%s%s%s", Bold, Reset, rawNewline, rawNewline)
 
-	// Split sessions into active and inactive (ghosts are included in inactive)
-	var active, inactive []session.Session
-	for _, s := range sessions {
-		if s.IsGhost || s.Status == session.StatusInactive {
-			inactive = append(inactive, s)
-		} else {
-			active = append(active, s)
-		}
-	}
+	active := ActiveSessions(sessions)
 
 	// Status summary (only active sessions)
 	counts := countByStatus(active)
@@ -130,11 +152,15 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 		l := calcSessionLayout(getTerminalWidth())
 
 		// Column headers
-		fmt.Fprintf(&buf, "%s%s", sessionHeader(l), rawNewline)
+		fmt.Fprintf(&buf, "%s%s", sessionHeader(l, unselectedMarker), rawNewline)
 		fmt.Fprintf(&buf, "%s%s", strings.Repeat("─", l.totalWidth), rawNewline)
 
-		for _, s := range active {
-			renderSessionRow(&buf, s, l, rawNewline)
+		for i, s := range active {
+			marker := unselectedMarker
+			if i == selected {
+				marker = selectedMarker
+			}
+			renderSessionRow(&buf, s, l, rawNewline, marker)
 		}
 	}
 
@@ -154,11 +180,17 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 		fmt.Fprintf(&buf, "%sClaude: Status unavailable - %s%s%s", Dim, statusLink, Reset, rawNewline)
 	}
 
+	// Feedback from the last jump attempt, on its own line so it never shifts
+	// the table.
+	if jumpMsg != "" {
+		fmt.Fprintf(&buf, "%s%s%s%s", Dim, sanitizeForTerminal(jumpMsg), Reset, rawNewline)
+	}
+
 	// Show help footer
 	if webURL != "" {
-		fmt.Fprintf(&buf, "%sh: history | u: usage | w: open webview (%s) | Ctrl+C: quit%s%s", Dim, webURL, Reset, rawNewline)
+		fmt.Fprintf(&buf, "%s↑↓: select | Enter: jump | h: history | u: usage | w: open webview (%s) | Ctrl+C: quit%s%s", Dim, webURL, Reset, rawNewline)
 	} else {
-		fmt.Fprintf(&buf, "%sh: history | u: usage | Ctrl+C: quit%s%s", Dim, Reset, rawNewline)
+		fmt.Fprintf(&buf, "%s↑↓: select | Enter: jump | h: history | u: usage | Ctrl+C: quit%s%s", Dim, Reset, rawNewline)
 	}
 
 	fmt.Print(buf.String())
@@ -246,12 +278,7 @@ func ResetTerminalTitle() {
 
 // buildTerminalTitle creates a status summary for the terminal title
 func buildTerminalTitle(sessions []session.Session) string {
-	counts := make(map[session.Status]int)
-	for _, s := range sessions {
-		if s.Status != session.StatusInactive && !s.IsGhost {
-			counts[s.Status]++
-		}
-	}
+	counts := countByStatus(ActiveSessions(sessions))
 
 	// Priority: Needs Input > Working > Waiting
 	var parts []string
@@ -441,27 +468,40 @@ func formatOrigin(o session.Origin, width int) string {
 
 // renderSessionRow renders a single session row using the given layout.
 // The main row shows status, project, origin (optional), context, and activity.
-// A second indented line shows the last message using the full width.
-func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, nl string) {
+// A second indented line shows the last message using the full width, followed
+// by any subagent rows. marker fills the left gutter; its width is carved out
+// of the row, so selected and unselected markers must be the same width.
+func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, nl string, marker string) {
 	activity := formatElapsed(time.Since(s.LastActivity))
 	if s.Status == session.StatusWorking {
 		activity = "Now"
 	}
 
+	// The gutter is carved out of the activity column rather than added to the
+	// row: calcSessionLayout already spends the full terminal width, so widening
+	// the row here would wrap every line.
+	gutter := len([]rune(marker))
+	activityWidth := l.activity - gutter
+	if activityWidth < 1 {
+		activityWidth = 1
+	}
+
 	var row string
 	if l.origin > 0 {
-		row = fmt.Sprintf("%s %s %s %s %-*s",
+		row = fmt.Sprintf("%s%s %s %s %s %-*s",
+			marker,
 			formatStatus(s.Status, l.status),
 			formatProject(s, l.project),
 			formatOrigin(s.Origin, l.origin),
 			formatContext(s, l.context),
-			l.activity, activity)
+			activityWidth, activity)
 	} else {
-		row = fmt.Sprintf("%s %s %s %-*s",
+		row = fmt.Sprintf("%s%s %s %s %-*s",
+			marker,
 			formatStatus(s.Status, l.status),
 			formatProject(s, l.project),
 			formatContext(s, l.context),
-			l.activity, activity)
+			activityWidth, activity)
 	}
 	buf.WriteString(row + nl)
 
@@ -472,7 +512,7 @@ func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, 
 		desc = sanitizeForTerminal(s.Task)
 	}
 	if desc != "" && desc != "-" {
-		indent := 2 // align with status text (after symbol + space)
+		indent := gutter + 2 // gutter, then align with status text (after symbol + space)
 		msgWidth := l.totalWidth - indent
 		if msgWidth > 0 {
 			msg := truncate(desc, msgWidth)
@@ -482,7 +522,7 @@ func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, 
 
 	// Nested subagent rows, indented under their parent session
 	for _, sa := range s.Subagents {
-		renderSubagentRow(buf, sa, l, nl)
+		renderSubagentRow(buf, sa, l, nl, gutter)
 	}
 
 	// Blank line after each session block for visual grouping
@@ -498,7 +538,7 @@ const (
 )
 
 // renderSubagentRow renders one subagent as an indented child of its session.
-func renderSubagentRow(buf *strings.Builder, sa session.Subagent, l sessionLayout, nl string) {
+func renderSubagentRow(buf *strings.Builder, sa session.Subagent, l sessionLayout, nl string, gutter int) {
 	activity := "Now"
 	if elapsed := time.Since(sa.LastActivity); elapsed >= time.Minute {
 		activity = formatElapsed(elapsed)
@@ -510,18 +550,24 @@ func renderSubagentRow(buf *strings.Builder, sa session.Subagent, l sessionLayou
 	}
 
 	// Label column absorbs everything the fixed columns don't use, so the
-	// activity column stays aligned with the parent table.
-	labelWidth := l.totalWidth - subagentIndentLen - 2 - l.activity - 1
+	// activity column stays aligned with the parent table. The selection gutter
+	// is part of that fixed cost.
+	activityWidth := l.activity - gutter
+	if activityWidth < 1 {
+		activityWidth = 1
+	}
+	labelWidth := l.totalWidth - gutter - subagentIndentLen - 2 - activityWidth - 1
 	if labelWidth < 1 {
 		labelWidth = 1
 	}
 	label = truncate(label, labelWidth)
 
-	fmt.Fprintf(buf, "%s%s%s%s %s%-*s%s %-*s%s",
+	fmt.Fprintf(buf, "%s%s%s%s%s %s%-*s%s %-*s%s",
+		strings.Repeat(" ", gutter),
 		subagentIndent,
 		Green, SymbolWorking, Reset,
 		Dim, labelWidth, label, Reset,
-		l.activity, activity,
+		activityWidth, activity,
 		nl)
 
 	desc := sanitizeForTerminal(sa.Description)
@@ -529,10 +575,11 @@ func renderSubagentRow(buf *strings.Builder, sa session.Subagent, l sessionLayou
 		desc = task
 	}
 	if desc != "" && desc != "-" {
-		descWidth := l.totalWidth - subagentDescIndent
+		indent := gutter + subagentDescIndent
+		descWidth := l.totalWidth - indent
 		if descWidth > 0 {
 			fmt.Fprintf(buf, "%s%s%s%s",
-				strings.Repeat(" ", subagentDescIndent),
+				strings.Repeat(" ", indent),
 				Dim, truncate(desc, descWidth), Reset+nl)
 		}
 	}

@@ -317,13 +317,58 @@ func extractStringField(line, prefix string) string {
 
 // extractPromptFromLine extracts user prompt text from a JSONL line using
 // fast string matching. Handles both plain string content and object arrays.
+// Turns that are pure Claude Code scaffolding (a local-command-caveat marker,
+// a slash-command invocation) carry no user-authored text, so they're reduced
+// to the invoked command or skipped rather than shown as raw wrapper markup.
 func extractPromptFromLine(line string) string {
+	text := rawPromptText(line)
+	if text == "" {
+		return ""
+	}
+
+	if preview, isScaffolding := commandScaffoldingPreview(text); isScaffolding {
+		return preview
+	}
+
+	return truncateString(text, 120)
+}
+
+// commandScaffoldingPreview reports whether text is a Claude Code scaffolding
+// turn -- a slash-command invocation or a local-command caveat block -- and if
+// so what to preview for it: the invoked command, or "" to skip the turn.
+//
+// The markers are recognised only at the start of the turn. Scaffolding Claude
+// Code generates always leads with one and carries nothing else; a human prompt
+// that merely mentions the markup ("why does <command-name> show up in my
+// previews?") does not, and keeps its own text. Note that these turns are not
+// reliably flagged isMeta -- on current logs caveat blocks are but slash-command
+// invocations are not -- so the markers themselves are what identify them.
+func commandScaffoldingPreview(text string) (string, bool) {
+	trimmed := strings.TrimLeft(text, " \t\r\n")
+	if !strings.HasPrefix(trimmed, "<command-") && !strings.HasPrefix(trimmed, "<local-command-") {
+		return "", false
+	}
+
+	const openTag, closeTag = "<command-name>", "</command-name>"
+	if idx := strings.Index(trimmed, openTag); idx >= 0 {
+		start := idx + len(openTag)
+		if end := strings.Index(trimmed[start:], closeTag); end >= 0 {
+			return truncateString(strings.TrimSpace(trimmed[start:start+end]), 120), true
+		}
+	}
+	return "", true
+}
+
+// rawPromptText extracts and JSON-unescapes the first user-message content
+// found in a JSONL line, trying both plain string content and object array
+// content shapes.
+func rawPromptText(line string) string {
 	// Try plain string content: "content":"..."
 	const contentStr = `"content":"`
 	if idx := strings.Index(line, contentStr); idx >= 0 {
 		start := idx + len(contentStr)
 		if text := extractQuotedValue(line, start); text != "" {
-			return truncateString(text, 120)
+			return text
 		}
 	}
 
@@ -334,7 +379,7 @@ func extractPromptFromLine(line string) string {
 		if tidx := strings.Index(line[cidx:], textField); tidx >= 0 {
 			start := cidx + tidx + len(textField)
 			if text := extractQuotedValue(line, start); text != "" {
-				return truncateString(text, 120)
+				return text
 			}
 		}
 	}
@@ -349,8 +394,10 @@ func extractQuotedValue(line string, start int) string {
 		return ""
 	}
 	i := start
+	hasEscape := false
 	for i < len(line) {
 		if line[i] == '\\' {
+			hasEscape = true
 			i += 2 // skip escaped character
 			continue
 		}
@@ -362,7 +409,26 @@ func extractQuotedValue(line string, start int) string {
 	if i <= start || i > len(line) {
 		return ""
 	}
-	return line[start:i]
+	raw := line[start:i]
+	if !hasEscape {
+		return raw
+	}
+	return unescapeJSONString(raw)
+}
+
+// unescapeJSONString decodes JSON string escapes in a raw, still-escaped
+// JSON string value by re-quoting it and letting encoding/json decode it.
+//
+// Best-effort: the raw slice can be malformed on its own -- a half-written
+// JSONL line leaves extractQuotedValue no closing quote to stop at, so it
+// returns everything to end of line, possibly cut mid-escape. There is nothing
+// better to show for those than the escaped text, so that is what comes back.
+func unescapeJSONString(s string) string {
+	var decoded string
+	if err := json.Unmarshal([]byte(`"`+s+`"`), &decoded); err != nil {
+		return s
+	}
+	return decoded
 }
 
 // truncateString truncates s to a maximum visible length (in runes, not bytes),

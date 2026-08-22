@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Web dashboard: page favicon
+- Web dashboard: compact 5-hour/7-day API quota indicator in the header, visible on every tab. Polls every 5 minutes (paused when the tab is hidden) rather than the usual short interval, since the underlying endpoint is undocumented and reported to get stuck rate-limited for the rest of the session if polled too aggressively; the widget circuit-breaks on the first failed fetch (other than "no OAuth token configured") and shows "quota unavailable" instead of retrying or silently going stale
+- Web dashboard: subagent rows now show a proper connected tree (a continuous line down to each subagent, hanging from the parent session card) instead of a repeated, disconnected `└` on every row
+- `/api/quota` endpoint returning just the API quota, for callers that don't need the full local-usage log scan `/api/usage` also does
+- API quota requests now identify csm with a `User-Agent` of `csm/<version> (+<repo url>)`, instead of going out unlabelled
+
+### Fixed
+
+- History prompt previews no longer show raw `<local-command-caveat>`/`<command-name>` scaffolding or literal `\n` escapes for sessions started via a slash or local command; the preview now shows the command itself, and JSON string escapes are properly decoded
+- Web dashboard: undefined `--muted` CSS variable (three spots) now correctly resolves to `--text-muted`, so quoted session titles and the extended-context model badge render at their intended dimmed color instead of full brightness
+- Web dashboard: dimmed text now meets WCAG AA (4.5:1) on every surface it actually renders on, not just the card background. `--text-dim`/`--text-muted` were as low as 2.76:1; the header's small type moved up a tier so an inactive tab reads at 6.43:1 instead of 5.28:1
+- Web dashboard: stopped session cards no longer use a blanket `opacity`, which composited every row inside them against the page and left their text at 2.67:1 — below the contrast the rest of the palette guarantees. They now recede by sitting flat against the page background instead, and the text keeps its normal contrast
+- Web dashboard: the per-session Token Breakdown chart is no longer silently log-scaled, which could make a negligible value (e.g. input tokens) render with a bar nearly as long as a value orders of magnitude larger (e.g. cache reads); it's now proportional to the session total, with a minimum-width floor so small nonzero values stay visible
+- Web dashboard: the embedded HTML/CSS/JS assets are now served with `Cache-Control: no-cache`; previously `embed.FS`'s zero mod-time could make browsers cache them indefinitely across `csm` upgrades
+- Web dashboard: a subagent row with only a spawn label (no status message yet) no longer renders with an empty title line and the label stranded on its own second line
+
 ## [0.4.0] - 2026-08-21
 
 ### Added

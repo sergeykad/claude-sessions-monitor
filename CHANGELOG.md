@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- CI, release, license and Buy Me a Coffee badges plus a support section in the README.
+
 ## [0.5.0] - 2026-08-23
 
 ### Added

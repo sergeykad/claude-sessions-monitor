@@ -57,7 +57,9 @@ func SaveOrigin(sessionID string, o Origin) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// The store holds one file per session naming that session's terminal and
+	// working directory, so it is readable only by the user it describes.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create origin store dir: %w", err)
 	}
 	data, err := json.Marshal(o)

@@ -2,8 +2,8 @@ package ui
 
 import (
 	"os"
-	"syscall"
-	"unsafe"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -11,46 +11,33 @@ const (
 	defaultTerminalHeight = 40
 )
 
-// winsize holds the terminal dimensions from TIOCGWINSZ.
-type winsize struct {
-	Row    uint16
-	Col    uint16
-	Xpixel uint16
-	Ypixel uint16
-}
-
-// getWinsize queries the terminal for its current dimensions.
-func getWinsize() (winsize, bool) {
-	var ws winsize
-	fd := os.Stdout.Fd()
-	_, _, err := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		fd,
-		uintptr(syscall.TIOCGWINSZ),
-		uintptr(unsafe.Pointer(&ws)),
-	)
-	if err != 0 {
-		return ws, false
+// terminalSize returns the terminal's columns and rows. ok is false when
+// stdout is not a terminal, which is the case whenever csm is piped or
+// redirected.
+func terminalSize() (cols, rows int, ok bool) {
+	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 0, 0, false
 	}
-	return ws, true
+	return cols, rows, true
 }
 
 // getTerminalWidth returns the current terminal width in columns.
 // Falls back to defaultTerminalWidth if detection fails.
 func getTerminalWidth() int {
-	ws, ok := getWinsize()
-	if !ok || ws.Col == 0 {
+	cols, _, ok := terminalSize()
+	if !ok || cols == 0 {
 		return defaultTerminalWidth
 	}
-	return int(ws.Col)
+	return cols
 }
 
 // getTerminalHeight returns the current terminal height in rows.
 // Falls back to defaultTerminalHeight if detection fails.
 func getTerminalHeight() int {
-	ws, ok := getWinsize()
-	if !ok || ws.Row == 0 {
+	_, rows, ok := terminalSize()
+	if !ok || rows == 0 {
 		return defaultTerminalHeight
 	}
-	return int(ws.Row)
+	return rows
 }

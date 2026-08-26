@@ -961,13 +961,12 @@ func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
 	if err != nil {
 		return "", 0, 0, false
 	}
-	min := 0
 	if len(parts) >= 3 {
 		if v, err := strconv.Atoi(parts[2]); err == nil {
-			min = v
+			minor = v
 		}
 	}
-	return family, maj, min, true
+	return family, maj, minor, true
 }
 
 // GhostThreshold is how long a running process's log must be silent before

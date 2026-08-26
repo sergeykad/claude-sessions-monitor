@@ -37,6 +37,25 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Pinned to match the Makefile. The action downloads a prebuilt binary,
+      # so the Go version above does not have to satisfy golangci-lint's own
+      # build requirement.
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+
+      # Build tags hide code from a single pass: internal/jump's real
+      # implementation is darwin-only, so the run above type-checks a stub
+      # instead of the ~200 lines that do the work.
+      - name: Lint (darwin)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+
       - name: Build
         run: go build ./...
 

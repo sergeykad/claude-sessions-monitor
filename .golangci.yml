@@ -1,0 +1,36 @@
+version: "2"
+
+# High-signal only: every linter here reports a defect, not a style preference.
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - predeclared
+    - unconvert
+    - usetesting
+  settings:
+    gosec:
+      excludes:
+        # Reading a log path the user named and launching their terminal is
+        # what this tool does, so subprocess and file-inclusion audits fire on
+        # every core path and never on a defect.
+        - G204
+        - G304
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+
+# Both default to a small number, which drops repeated findings without saying
+# so. A gate that hides part of what it found reports a clean run on a dirty
+# tree.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

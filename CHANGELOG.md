@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - CI, release, license and Buy Me a Coffee badges plus a support section in the README.
+- `golangci-lint` runs in CI and in `make check`, configured in `.golangci.yml`. It runs twice — once for the host and once for `GOOS=darwin` — because the jump feature is macOS-only and a Linux-only pass never type-checks it. The config carries no baseline: `main` reports zero findings, and a finding that is correct as written is annotated at the site with the reason
 
 ### Security
 
@@ -20,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The origin store is created with `0700` rather than `0755`. Each file in it names a session's terminal and working directory, which was readable by every account on the machine
+- A malformed `/proc` entry was skipped by accident rather than by decision: the PID was parsed with `fmt.Sscanf` and the result discarded, leaving the variable at zero, which a later check happened to reject
 - `--kill-ghosts` could terminate a session that was actively working. Logs are sorted newest-first and pids arrive in `ps` order, and the two were paired by index, so in a project running several Claude processes the stale log could carry the busy process's pid. Ghost reporting now honours the same `PIDConfident` check that jump already used, and reports which processes refused the signal rather than only counting the ones that accepted it
 - A running session whose log could not be read vanished from the dashboard and from the summary counts, because the read failure left it marked Inactive and inactive sessions are filtered out. Such rows now stay visible, marked `[?]` to show their numbers are incomplete
 - `csm` reported "No active Claude sessions." with complete confidence when the `ps` scan itself failed, and the live view discarded discovery errors on every frame. Both now say what went wrong
@@ -40,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The terminal size comes from `golang.org/x/term` instead of a hand-rolled `TIOCGWINSZ` ioctl with an `unsafe.Pointer`. `internal/ui` now compiles for Windows as a side effect
 - `QuickSessionStats` returns a struct and an error instead of six positional values, three of them adjacent strings that could be swapped without the compiler noticing
 
 ### Removed

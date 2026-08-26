@@ -1,7 +1,9 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -57,5 +59,41 @@ func TestLoadOriginMissing(t *testing.T) {
 
 	if _, ok := LoadOrigin("no-such-id"); ok {
 		t.Errorf("LoadOrigin of missing id should return ok=false")
+	}
+}
+
+// A world-readable store hands every account on the machine the terminal and
+// working directory of every session the user has open.
+func TestSaveOriginCreatesAPrivateStoreDirectory(t *testing.T) {
+	root := t.TempDir()
+
+	// umask is process-global and would strip the very bits this test looks
+	// for, making the result depend on whoever ran it.
+	old := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	probe := filepath.Join(root, "probe")
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		t.Fatalf("probe mkdir: %v", err)
+	}
+	if info, err := os.Stat(probe); err != nil || info.Mode().Perm() != 0o755 {
+		t.Skip("filesystem does not preserve directory permissions")
+	}
+
+	dir := filepath.Join(root, "origins")
+	originStoreDirFn = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { originStoreDirFn = defaultOriginStoreDir })
+
+	sid := "d3adbeef-0000-1111-2222-aaaabbbbcccc"
+	if err := SaveOrigin(sid, Origin{Category: OriginTerminal, App: "ghostty", Display: "Ghostty"}); err != nil {
+		t.Fatalf("SaveOrigin: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat store dir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("store dir is %04o; group and other must have no access at all", perm)
 	}
 }

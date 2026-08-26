@@ -145,7 +145,9 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 	if err := ui.SetupRawInput(); err != nil {
 		cancel()
 		fmt.Fprintf(os.Stderr, "Error setting up keyboard input: %v\n", err)
-		os.Exit(1)
+		// The deferred cancel() is the only defer in scope and is called
+		// above; nothing else is registered this early.
+		os.Exit(1) //nolint:gocritic // exitAfterDefer
 	}
 
 	// Start keyboard reader
@@ -273,8 +275,11 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 				if viewMode != ViewModeLive || selected < 0 || selected >= len(visible) {
 					break
 				}
-				res, err := jump.Focus(visible[selected])
-				if err != nil {
+				// err is always non-nil on !darwin, where jump_other.go's
+				// Focus is a stub. The success branch below is live on
+				// darwin, so it must not be deleted as unreachable.
+				res, err := jump.Focus(visible[selected]) //nolint:staticcheck // SA4023
+				if err != nil {                           //nolint:staticcheck // SA4023
 					jumpMsg = err.Error()
 				} else {
 					jumpMsg = res.Message()
@@ -343,7 +348,9 @@ func runWebOnly(webPort int) {
 	webErrCh, err := srv.Start(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
-		os.Exit(1)
+		// Same as above: cancel() is the only defer, and the context dies
+		// with the process.
+		os.Exit(1) //nolint:gocritic // exitAfterDefer
 	}
 
 	fmt.Printf("Web dashboard running at http://%s\n", srv.Addr())

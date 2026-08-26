@@ -137,7 +137,10 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	// Parse as array, handling both object and string elements
 	var rawItems []json.RawMessage
 	if err := json.Unmarshal(m.RawContent, &rawItems); err != nil {
-		return nil
+		// A content shape this parser does not know costs one message's text,
+		// not the session: returning the error would abort the whole log and
+		// blank a dashboard row over a field nothing here reads.
+		return nil //nolint:nilerr
 	}
 
 	var items []ContentItem

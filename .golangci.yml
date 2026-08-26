@@ -1,5 +1,12 @@
 version: "2"
 
+# livecheck_manual_test.go is `darwin && manual`, so neither the host pass nor
+# the darwin pass compiles it and nothing there is ever analysed. The tag is
+# carried by exactly one file, so switching it on costs nothing elsewhere.
+run:
+  build-tags:
+    - manual
+
 # High-signal only: every linter here reports a defect, not a style preference.
 linters:
   default: standard

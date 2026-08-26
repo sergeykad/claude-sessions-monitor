@@ -2,8 +2,11 @@ package session
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -165,5 +168,142 @@ func TestUnescapeJSONStringFallsBackToRaw(t *testing.T) {
 	const malformed = `unterminated \u00`
 	if got := unescapeJSONString(malformed); got != malformed {
 		t.Errorf("unescapeJSONString() = %q, want the raw input %q back", got, malformed)
+	}
+}
+
+// Claude writes RFC3339 timestamps in UTC. Taking each time's calendar date in
+// its own location subtracted two different midnights, so every heading in the
+// history view was a day out for readers east of UTC.
+func TestGetDateGroupAtAcrossZonesAndDST(t *testing.T) {
+	cph, err := time.LoadLocation("Europe/Copenhagen")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	kolkata, err := time.LoadLocation("Asia/Kolkata") // UTC+5:30
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		now  time.Time
+		when time.Time
+		want string
+	}{
+		{
+			name: "UTC session late yesterday, reader just past local midnight",
+			now:  time.Date(2026, 8, 23, 1, 0, 0, 0, cph),
+			when: time.Date(2026, 8, 22, 20, 0, 0, 0, time.UTC), // 22:00 local, yesterday
+			want: "Yesterday",
+		},
+		{
+			name: "UTC session that is already today in local time",
+			now:  time.Date(2026, 8, 23, 3, 0, 0, 0, cph),
+			when: time.Date(2026, 8, 23, 0, 30, 0, 0, time.UTC), // 02:30 local, today
+			want: "Today",
+		},
+		{
+			name: "spring forward makes yesterday 23 hours ago",
+			now:  time.Date(2026, 3, 30, 12, 0, 0, 0, cph),
+			when: time.Date(2026, 3, 29, 12, 0, 0, 0, cph),
+			want: "Yesterday",
+		},
+		{
+			name: "half-hour offset zone",
+			now:  time.Date(2026, 8, 23, 2, 0, 0, 0, kolkata),
+			when: time.Date(2026, 8, 22, 19, 0, 0, 0, time.UTC), // 00:30 local, today
+			want: "Today",
+		},
+		{
+			name: "older session falls through to a date",
+			now:  time.Date(2026, 8, 23, 12, 0, 0, 0, cph),
+			when: time.Date(2026, 8, 20, 12, 0, 0, 0, cph),
+			want: "Aug 20",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getDateGroupAt(tt.now, tt.when); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Every history row -- its project name, branch, opening prompt, message count
+// and time range -- is read out of the raw JSONL by this one function. A wrong
+// field name here empties a column for every session without failing anything.
+func TestQuickSessionStatsExtractsEveryHistoryField(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "session.jsonl")
+	content := `{"type":"user","cwd":"/home/dev/api","gitBranch":"main","timestamp":"2026-08-20T10:00:00Z","message":{"content":"first prompt"}}
+{"type":"user","cwd":"/home/dev/moved","gitBranch":"feature/x","timestamp":"2026-08-20T10:05:00Z","message":{"content":"second prompt"}}
+`
+	if err := os.WriteFile(log, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := QuickSessionStats(log)
+	if err != nil {
+		t.Fatalf("QuickSessionStats: %v", err)
+	}
+
+	// The branch comes from the last line that carries one, because it can
+	// change part-way through a session. cwd is taken from the first line, so a
+	// later one cannot move a session to another project mid-history.
+	want := SessionStats{
+		MessageCount: 2,
+		StartTime:    time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC),
+		EndTime:      time.Date(2026, 8, 20, 10, 5, 0, 0, time.UTC),
+		GitBranch:    "feature/x",
+		FirstPrompt:  "first prompt",
+		CWD:          "/home/dev/api",
+	}
+	if !stats.StartTime.Equal(want.StartTime) || !stats.EndTime.Equal(want.EndTime) {
+		t.Errorf("time range = %s..%s, want %s..%s",
+			stats.StartTime, stats.EndTime, want.StartTime, want.EndTime)
+	}
+	stats.StartTime, stats.EndTime = want.StartTime, want.EndTime
+	if stats != want {
+		t.Errorf("QuickSessionStats = %+v, want %+v", stats, want)
+	}
+}
+
+// A log that cannot be read to the end yields no messages and no time range.
+// Presented as a finished reading, an afternoon's work shows up in the history
+// view as "0s, 0 msgs" and quietly drags the footer total down with it.
+func TestDiscoverHistoryMarksSessionsWithUnreadableLogs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := filepath.Join(home, ".claude", "projects", "-tmp-api")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := time.Now().Format(time.RFC3339Nano)
+	var b strings.Builder
+	b.WriteString(`{"type":"user","cwd":"/tmp/api","timestamp":"` + ts + `","message":{"content":"hello"}}` + "\n")
+	// One line past the 10MB scanner cap: the scan stops here and the two
+	// prompts below it are never counted.
+	b.WriteString(`{"type":"user","pad":"` + strings.Repeat("x", 11*1024*1024) + `"}` + "\n")
+	b.WriteString(`{"type":"user","timestamp":"` + ts + `","message":{"content":"second"}}` + "\n")
+
+	logFile := filepath.Join(projectDir, "session.jsonl")
+	if err := os.WriteFile(logFile, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := DiscoverHistory(7)
+	if err != nil {
+		t.Fatalf("DiscoverHistory: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want the one written above", len(sessions))
+	}
+	if sessions[0].Degraded == "" {
+		t.Error("row is not marked, so its truncated counts read as a measurement")
+	}
+	if !strings.Contains(sessions[0].Degraded, logFile) {
+		t.Errorf("mark does not name the unreadable log: %q", sessions[0].Degraded)
 	}
 }

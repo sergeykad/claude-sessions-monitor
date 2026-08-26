@@ -159,6 +159,14 @@ nav {
 }
 #connection-status.connected { background: var(--green); }
 #connection-status.disconnected { background: var(--red); }
+/* Connected, but the newest scan failed: the data on screen is stale even
+   though the stream is healthy. */
+#connection-status.stale { background: var(--yellow); }
+
+/* This row's log could not be read in full, so its numbers are not a
+   measurement. */
+.session-degraded-badge { background: var(--yellow); color: var(--bg); }
+.usage-partial { color: var(--yellow); font-size: 0.85em; margin-top: 8px; }
 
 /* Status bar */
 .status-bar {

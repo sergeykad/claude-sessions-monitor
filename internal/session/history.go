@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +22,9 @@ type HistorySession struct {
 	FirstPrompt  string        `json:"first_prompt"`
 	LastMessage  string        `json:"last_message,omitempty"`
 	LogFile      string        `json:"log_file"`
+	// Degraded names why this session's log could not be read to the end. Its
+	// message count and duration are a floor when it is set, not a reading.
+	Degraded string `json:"degraded,omitempty"`
 }
 
 // SessionIndex represents the structure of sessions-index.json
@@ -154,34 +158,42 @@ func DiscoverHistory(days int) ([]HistorySession, error) {
 				continue
 			}
 
-			msgCount, startTime, endTime, branch, prompt, sessionCwd, _ := QuickSessionStats(logFile)
-			if startTime.IsZero() {
-				startTime = info.ModTime()
+			st, statsErr := QuickSessionStats(logFile)
+			degraded := ""
+			if statsErr != nil {
+				// The row still names the session, because a partial scan
+				// describes it better than dropping it does. What it must not do
+				// is show an afternoon's work as "0s, 0 msgs".
+				degraded = statsErr.Error()
 			}
-			if endTime.IsZero() {
-				endTime = info.ModTime()
+			if st.StartTime.IsZero() {
+				st.StartTime = info.ModTime()
+			}
+			if st.EndTime.IsZero() {
+				st.EndTime = info.ModTime()
 			}
 
 			// Re-check cutoff against actual start time
-			if startTime.Before(cutoff) {
+			if st.StartTime.Before(cutoff) {
 				continue
 			}
 
 			// Use cwd for accurate project naming when available
 			displayName := projectName
-			if sessionCwd != "" {
-				displayName = extractProjectName(sessionCwd)
+			if st.CWD != "" {
+				displayName = extractProjectName(st.CWD)
 			}
 
 			sessions = append(sessions, HistorySession{
 				Project:      displayName,
-				GitBranch:    branch,
-				FirstPrompt:  prompt,
-				StartTime:    startTime,
-				EndTime:      endTime,
-				Duration:     endTime.Sub(startTime),
-				MessageCount: msgCount,
+				GitBranch:    st.GitBranch,
+				FirstPrompt:  st.FirstPrompt,
+				StartTime:    st.StartTime,
+				EndTime:      st.EndTime,
+				Duration:     st.EndTime.Sub(st.StartTime),
+				MessageCount: st.MessageCount,
 				LogFile:      logFile,
+				Degraded:     degraded,
 			})
 			seen[logFile] = true
 		}
@@ -241,13 +253,32 @@ func extractProjectName(fullPath string) string {
 	return filepath.Base(fullPath)
 }
 
-// QuickSessionStats does a fast scan of a JSONL log file to get the message
-// count, time range, git branch, cwd, first user prompt, and custom title
-// without full JSON parsing of every line.
-func QuickSessionStats(logFile string) (messageCount int, startTime, endTime time.Time, gitBranch, firstPrompt, cwd, customTitle string) {
+// SessionStats is what a fast scan of a JSONL log can tell us about a session
+// without parsing every line as JSON.
+//
+// Three of the fields are bare strings, which is why this is a struct rather
+// than positional returns: two of them could otherwise be swapped at a call
+// site or inside the scan loop without the compiler noticing.
+type SessionStats struct {
+	MessageCount int
+	StartTime    time.Time
+	EndTime      time.Time
+	GitBranch    string
+	FirstPrompt  string
+	CWD          string
+}
+
+// QuickSessionStats scans a JSONL log file for the fields the history view
+// needs, without full JSON parsing of every line.
+//
+// A non-nil error means the scan stopped early and the counts and time range
+// below it are incomplete. Callers must not present them as a finished
+// reading: a read failure previously surfaced as "0 messages, 0s duration"
+// for a session someone had spent an afternoon in.
+func QuickSessionStats(logFile string) (stats SessionStats, err error) {
 	file, err := os.Open(logFile)
 	if err != nil {
-		return 0, time.Time{}, time.Time{}, "", "", "", ""
+		return stats, err
 	}
 	defer file.Close()
 
@@ -264,40 +295,40 @@ func QuickSessionStats(logFile string) (messageCount int, startTime, endTime tim
 		// Count user prompts only (exclude tool results and assistant messages)
 		isUserMsg := strings.Contains(line, `"type":"user"`) && !strings.Contains(line, `"type":"tool_result"`)
 		if isUserMsg {
-			messageCount++
+			stats.MessageCount++
 			// Capture first user prompt text
-			if firstPrompt == "" {
-				firstPrompt = extractPromptFromLine(line)
+			if stats.FirstPrompt == "" {
+				stats.FirstPrompt = extractPromptFromLine(line)
 			}
 		}
 
 		// Extract git branch (keep last non-empty value, branch can change mid-session)
 		if b := extractStringField(line, `"gitBranch":"`); b != "" {
-			gitBranch = b
+			stats.GitBranch = b
 		}
 
 		// Extract cwd (use first non-empty value, stays constant within a session)
-		if cwd == "" {
+		if stats.CWD == "" {
 			if c := extractStringField(line, `"cwd":"`); c != "" {
-				cwd = c
+				stats.CWD = c
 			}
-		}
-
-		// Extract custom title (keep last non-empty value, title can change mid-session)
-		if t := extractStringField(line, `"customTitle":"`); t != "" {
-			customTitle = t
 		}
 
 		// Extract timestamp via string matching (avoids full JSON parse)
 		if ts := extractTimestampFromLine(line); !ts.IsZero() {
-			if startTime.IsZero() {
-				startTime = ts
+			if stats.StartTime.IsZero() {
+				stats.StartTime = ts
 			}
-			endTime = ts
+			stats.EndTime = ts
 		}
 	}
 
-	return messageCount, startTime, endTime, gitBranch, firstPrompt, cwd, customTitle
+	// bufio.Scanner stops silently on a read error or an oversized line, so
+	// without this the partial counts would be returned as a complete reading.
+	if scanErr := scanner.Err(); scanErr != nil {
+		return stats, fmt.Errorf("scan %s: %w", logFile, scanErr)
+	}
+	return stats, nil
 }
 
 // extractStringField extracts a JSON string value using fast string matching.
@@ -470,20 +501,34 @@ func extractTimestampFromLine(line string) time.Time {
 	return ts
 }
 
-// GetDateGroup returns a human-readable date group for a session
+// GetDateGroup returns a human-readable date group for a session.
 func GetDateGroup(t time.Time) string {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	sessionDate := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	return getDateGroupAt(time.Now(), t)
+}
 
-	days := int(today.Sub(sessionDate).Hours() / 24)
+// getDateGroupAt is GetDateGroup with the clock passed in, so the boundaries
+// can be tested.
+//
+// Both times are moved into the reader's location before anything is compared.
+// Claude writes RFC3339 timestamps in UTC, so taking the calendar date of each
+// in its own location subtracted two different midnights and shifted every
+// heading by a day for anyone east of UTC. Counting whole days out of an hour
+// difference has its own failure: a spring-forward day is 23 hours long, and
+// 23/24 truncates to zero, which labels yesterday "Today". Comparing calendar
+// dates avoids both.
+func getDateGroupAt(now, t time.Time) string {
+	loc := now.Location()
+	local := t.In(loc)
 
-	switch days {
-	case 0:
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	sessionDate := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+
+	switch {
+	case sessionDate.Equal(today):
 		return "Today"
-	case 1:
+	case sessionDate.Equal(today.AddDate(0, 0, -1)):
 		return "Yesterday"
 	default:
-		return t.Format("Jan 2")
+		return local.Format("Jan 2")
 	}
 }

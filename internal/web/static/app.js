@@ -225,7 +225,17 @@
             try {
                 currentSessions = JSON.parse(e.data);
                 if (currentView === 'live') renderSessions();
+                connStatus.className = 'connected';
+                connStatus.title = 'SSE connected';
             } catch (err) { /* ignore parse errors */ }
+        });
+
+        // The connection stays up and the heartbeat keeps arriving when a scan
+        // fails, so without this the page would keep showing the last good
+        // state under a "connected" indicator, with the ages frozen.
+        sseSource.addEventListener('scan_error', () => {
+            connStatus.className = 'stale';
+            connStatus.title = 'Connected, but the last session scan failed - data may be out of date';
         });
 
         sseSource.addEventListener('heartbeat', () => {});
@@ -284,7 +294,8 @@
                     ${s.git_branch ? `<span class="session-branch">${esc(s.git_branch)}</span>` : ''}
                     ${s.session_title ? `<span class="session-title">${esc(s.session_title)}</span>` : ''}
                     ${s.origin && s.origin.category ? `<span class="badge session-origin origin-${esc(s.origin.category)}" title="${esc(s.origin.app || '')}">${esc(s.origin.display || s.origin.app || '')}</span>` : ''}
-                    ${isExtendedContextModel(s.model) ? `<span class="badge session-model-badge" title="${esc(s.model)}">1M</span>` : ''}
+                    ${(s.context_window || 0) > 200000 ? `<span class="badge session-model-badge" title="${esc(s.model)}">1M</span>` : ''}
+                    ${s.degraded ? `<span class="badge session-degraded-badge" title="${esc(s.degraded)}">?</span>` : ''}
                     <span class="session-context" title="${esc(s.model || '')}">
                         <span class="context-bar"><span class="context-fill ${ctxCls}" style="width:${Math.min(pct, 100)}%"></span></span>
                         <span>${pct > 0 ? Math.round(pct) + '%' : '-'}</span>
@@ -419,6 +430,7 @@
                 html += `<div class="history-row" data-logfile="${esc(s.log_file || '')}">
                     <div class="history-row-main">
                         <span class="history-branch">${s.git_branch ? esc(s.git_branch) : '-'}</span>
+                        ${s.degraded ? `<span class="badge session-degraded-badge" title="${esc(s.degraded)}">?</span>` : ''}
                         <span class="history-date">${date}</span>
                         <span class="history-messages">${s.message_count || 0}</span>
                         <span class="history-duration">${dur}</span>
@@ -548,8 +560,15 @@
                 });
                 html += '</div>';
             }
+        } else if (local && local.error) {
+            // Saying "no usage" here would be a positive claim invented from a
+            // failure to look.
+            html += `<div class="usage-unavailable">Local usage unavailable (${esc(local.error)})</div>`;
         } else {
             html += '<div class="usage-unavailable">No token usage in the past 5 hours.</div>';
+        }
+        if (local && local.partial_logs > 0) {
+            html += `<div class="usage-partial">${local.partial_logs} log(s) could not be read in full; totals are a lower bound.</div>`;
         }
         html += '</div>';
 
@@ -957,7 +976,6 @@
             case 'Working': return 'working';
             case 'Needs Input': return 'needs-input';
             case 'Waiting': return 'waiting';
-            case 'Idle': return 'idle';
             case 'Inactive': return 'inactive';
             default: return 'inactive';
         }
@@ -968,7 +986,6 @@
             case 'Working': return '\u25CF';     // ●
             case 'Needs Input': return '\u25B2';  // ▲
             case 'Waiting': return '\u25C9';      // ◉
-            case 'Idle': return '\u25CB';          // ○
             case 'Inactive': return '\u25CC';      // ◌
             default: return '\u25CC';
         }
@@ -1042,14 +1059,4 @@
 
     // Mirrors session.contextWindowForModel in Go: opus/sonnet from generation 4.6
     // onward use the 1M extended context window.
-    function isExtendedContextModel(model) {
-        if (!model) return false;
-        const m = /^claude-(opus|sonnet|haiku)-(\d+)-(\d+)/.exec(model);
-        if (!m) return false;
-        const family = m[1];
-        const major = parseInt(m[2], 10);
-        const minor = parseInt(m[3], 10);
-        if (family !== 'opus' && family !== 'sonnet') return false;
-        return major > 4 || (major === 4 && minor >= 6);
-    }
 })();

@@ -30,11 +30,11 @@ func main() {
 	showVersion := flag.Bool("v", false, "Show version")
 	interval := flag.Duration("interval", 2*time.Second, "Refresh interval for live view")
 	historyMode := flag.Bool("history", false, "Show session history")
-	historyDays := flag.Int("days", 7, "Number of days for history (default 7)")
+	historyDays := flag.Int("days", 7, "Number of days for history")
 	killGhosts := flag.Bool("kill-ghosts", false, "Find and terminate ghost (orphaned) Claude processes")
 	webMode := flag.Bool("web", false, "Start web dashboard server")
 	webOnly := flag.Bool("web-only", false, "Start web dashboard server without terminal UI (headless)")
-	webPort := flag.Int("port", 9847, "Port for web dashboard (default 9847)")
+	webPort := flag.Int("port", 9847, "Port for web dashboard")
 	flag.Parse()
 
 	// Check for conflicting flags
@@ -62,7 +62,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error discovering history: %v\n", err)
 			os.Exit(1)
 		}
-		ui.RenderHistory(sessions, *historyDays, false)
+		ui.RenderHistory(sessions, *historyDays, false, "")
 		return
 	}
 
@@ -111,6 +111,11 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// A failure inside the web server reaches the main loop rather than being
+	// printed here: this goroutine writes onto the alternate screen, where the
+	// next frame overwrites it, and the deferred restore below never runs.
+	webFatal := make(chan error, 1)
+
 	// Start web server in background if requested
 	var webURL string
 	var webBrowseURL string
@@ -128,7 +133,7 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 			}
 			go func() {
 				if err := <-webErrCh; err != nil {
-					fmt.Fprintf(os.Stderr, "\nWeb server error: %v\n", err)
+					webFatal <- err
 				}
 			}()
 			webBrowseURL = "http://" + srv.Addr()
@@ -167,6 +172,7 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 	}
 
 	// Take over the screen and ensure cleanup on exit
+	var fatalErr error
 	ui.EnterAltScreen()
 	ui.HideCursor()
 	defer func() {
@@ -175,6 +181,12 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 		ui.ShowCursor()
 		ui.ResetTerminalTitle()
 		ui.ExitAltScreen()
+		if fatalErr != nil {
+			// After the restore above, so the message lands on the shell's
+			// screen instead of the one that is about to be discarded.
+			fmt.Fprintf(os.Stderr, "csm: %v\n", fatalErr)
+			os.Exit(1)
+		}
 		fmt.Println("Goodbye!")
 	}()
 
@@ -186,22 +198,33 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 		switch viewMode {
 		case ViewModeHistory:
 			ui.MoveCursorHome()
-			sessions, _ := session.DiscoverHistory(historyDays)
-			ui.RenderHistory(sessions, historyDays, true)
+			sessions, err := session.DiscoverHistory(historyDays)
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			ui.RenderHistory(sessions, historyDays, true, errMsg)
 		case ViewModeUsage:
 			ui.MoveCursorHome()
 			usage := session.ComputeUsage()
 			apiQuota := session.FetchAPIQuota()
 			ui.RenderUsage(usage, apiQuota, true)
 		default:
-			sessions, _ := session.Discover()
+			sessions, err := session.Discover()
+			// An empty dashboard and a failed scan look identical once the
+			// error is dropped, so the reason goes into the frame rather than
+			// leaving csm to report "No active Claude sessions." either way.
+			msg := jumpMsg
+			if err != nil {
+				msg = "Cannot read sessions: " + err.Error()
+			}
 			// Sessions come and go between frames, so the selection is clamped
 			// on every render rather than only when a key moves it.
 			visible = ui.ActiveSessions(sessions)
 			if selected >= len(visible) {
 				selected = len(visible) - 1
 			}
-			ui.RenderLive(sessions, webURL, lastClaudeStatus, selected, jumpMsg)
+			ui.RenderLive(sessions, webURL, lastClaudeStatus, selected, msg)
 		}
 		// Erase anything left over below this frame from a previous, longer
 		// one, once per render cycle rather than each view remembering to.
@@ -222,6 +245,9 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 			cancel()
 			return
 		case <-ctx.Done():
+			return
+		case fatalErr = <-webFatal:
+			cancel()
 			return
 		case key := <-keyCh:
 			// Any keypress clears feedback from the previous jump, so a stale
@@ -352,7 +378,7 @@ func handleKillGhosts() {
 	}
 	fmt.Println()
 
-	killed, err := session.KillGhostProcesses()
+	killed, failed, err := session.KillGhostProcesses()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error killing ghost processes: %v\n", err)
 		os.Exit(1)
@@ -362,6 +388,14 @@ func handleKillGhosts() {
 		fmt.Println("No processes were terminated (they may have already exited).")
 	} else {
 		fmt.Printf("Terminated %d ghost process(es).\n", len(killed))
+	}
+
+	for _, f := range failed {
+		fmt.Fprintf(os.Stderr, "  could not signal PID %d (%s): %v\n",
+			f.Ghost.PID, f.Ghost.Project, f.Err)
+	}
+	if len(failed) > 0 {
+		os.Exit(1)
 	}
 }
 

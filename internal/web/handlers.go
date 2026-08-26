@@ -96,30 +96,35 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Enrich with stats from the JSONL file
-			msgCount, start, end, extractedBranch, firstPrompt, _, _ := session.QuickSessionStats(s.LogFile)
-			if start.IsZero() {
-				start = s.LastActivity
+			st, statsErr := session.QuickSessionStats(s.LogFile)
+			degraded := ""
+			if statsErr != nil {
+				degraded = statsErr.Error()
 			}
-			if end.IsZero() {
-				end = s.LastActivity
+			if st.StartTime.IsZero() {
+				st.StartTime = s.LastActivity
+			}
+			if st.EndTime.IsZero() {
+				st.EndTime = s.LastActivity
 			}
 
 			// Prefer live session's git branch, fall back to extracted
 			branch := s.GitBranch
 			if branch == "" {
-				branch = extractedBranch
+				branch = st.GitBranch
 			}
 
 			sessions = append(sessions, session.HistorySession{
 				Project:      s.Project,
 				GitBranch:    branch,
-				FirstPrompt:  firstPrompt,
-				StartTime:    start,
-				EndTime:      end,
-				Duration:     end.Sub(start),
-				MessageCount: msgCount,
+				FirstPrompt:  st.FirstPrompt,
+				StartTime:    st.StartTime,
+				EndTime:      st.EndTime,
+				Duration:     st.EndTime.Sub(st.StartTime),
+				MessageCount: st.MessageCount,
 				LastMessage:  s.LastMessage,
 				LogFile:      s.LogFile,
+				Degraded:     degraded,
 			})
 		}
 

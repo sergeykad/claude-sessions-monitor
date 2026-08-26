@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,26 +24,34 @@ const (
 	StatusWorking    Status = "Working"
 	StatusNeedsInput Status = "Needs Input"
 	StatusWaiting    Status = "Waiting"
-	StatusIdle       Status = "Idle"
 	StatusInactive   Status = "Inactive"
 )
 
 // Session represents a Claude Code session
 type Session struct {
-	Project        string     `json:"project"`
-	Status         Status     `json:"status"`
-	LastActivity   time.Time  `json:"last_activity"`
-	Task           string     `json:"task"`
-	Summary        string     `json:"summary,omitempty"`
-	LastMessage    string     `json:"last_message,omitempty"`
-	LogFile        string     `json:"log_file"`
-	ProjectPath    string     `json:"-"`                         // Encoded project directory name (as used under ~/.claude/projects)
-	CWD            string     `json:"-"`                         // Absolute working directory recorded in the log
-	SessionID      string     `json:"session_id,omitempty"`      // Claude session UUID (log filename stem)
-	Origin         Origin     `json:"origin,omitempty"`          // Where the session was launched from
-	IsGhost        bool       `json:"is_ghost,omitempty"`        // True if process running but log is stale
-	GhostPID       int        `json:"ghost_pid,omitempty"`       // PID of the ghost process (for killing)
-	PIDConfident   bool       `json:"-"`                         // True when GhostPID is certainly this session's process, not a positional guess
+	Project      string    `json:"project"`
+	Status       Status    `json:"status"`
+	LastActivity time.Time `json:"last_activity"`
+	Task         string    `json:"task"`
+	Summary      string    `json:"summary,omitempty"`
+	LastMessage  string    `json:"last_message,omitempty"`
+	LogFile      string    `json:"log_file"`
+	ProjectPath  string    `json:"-"`                    // Encoded project directory name (as used under ~/.claude/projects)
+	CWD          string    `json:"-"`                    // Absolute working directory recorded in the log
+	SessionID    string    `json:"session_id,omitempty"` // Claude session UUID (log filename stem)
+	Origin       Origin    `json:"origin,omitempty"`     // Where the session was launched from
+	IsGhost      bool      `json:"is_ghost,omitempty"`   // True if process running but log is stale
+	GhostPID     int       `json:"ghost_pid,omitempty"`  // PID of the ghost process (for killing)
+	PIDConfident bool      `json:"-"`                    // True when GhostPID is certainly this session's process, not a positional guess
+	// ContextWindow is the model's context size in tokens. The dashboard needs
+	// the decision, not the model id: reimplementing the id parsing in
+	// JavaScript let the two disagree about the same session.
+	ContextWindow int `json:"context_window,omitempty"`
+	// Degraded names the reason this session's log could not be read in full.
+	// Empty means the data below is complete. Anything else means some of it
+	// is missing, and the UI marks the row so the numbers are not read as
+	// measurements.
+	Degraded       string     `json:"degraded,omitempty"`
 	GitBranch      string     `json:"git_branch,omitempty"`      // Current git branch
 	HasUnsandboxed bool       `json:"has_unsandboxed,omitempty"` // True if any command bypassed sandbox
 	ContextPercent float64    `json:"context_percent,omitempty"` // Percentage of context window used
@@ -195,17 +204,29 @@ func ClaudeProjectsDir() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// getRunningClaudeDirs returns a map of encoded directory names to PIDs where Claude processes are running
+// listProcesses shells out to ps. It is a variable so a test can make the
+// process scan fail, which is the case that used to be indistinguishable from
+// "nothing is running".
+var listProcesses = func() ([]byte, error) {
+	// ps directly, with no shell pipeline, to avoid shell injection risks.
+	return exec.Command("ps", "ax", "-o", "pid=,comm=").Output()
+}
+
+// getRunningClaudeDirs returns a map of encoded directory names to PIDs where
+// Claude processes are running.
+//
+// It reports the error rather than an empty map: "nothing is running" and "the
+// process scan failed" produce identical results downstream, and every session
+// would be reported Inactive and filtered out of the dashboard. csm would say
+// "No active Claude sessions." with total confidence while sessions ran.
 // The keys are in the same format as the project directory names (e.g., -Users-username-Projects-...)
 // Multiple Claude processes in the same directory are tracked as separate PIDs.
-func getRunningClaudeDirs() map[string][]int {
+func getRunningClaudeDirs() (map[string][]int, error) {
 	dirs := make(map[string][]int)
 
-	// Use ps directly without a shell pipeline to avoid shell injection risks
-	cmd := exec.Command("ps", "ax", "-o", "pid=,comm=")
-	output, err := cmd.Output()
+	output, err := listProcesses()
 	if err != nil {
-		return dirs
+		return nil, fmt.Errorf("listing processes with ps: %w", err)
 	}
 
 	// Parse ps output to find claude processes
@@ -236,7 +257,7 @@ func getRunningClaudeDirs() map[string][]int {
 		dirs[encoded] = append(dirs[encoded], pid)
 	}
 
-	return dirs
+	return dirs, nil
 }
 
 // getProcessCwd returns the current working directory of a process by PID.
@@ -316,7 +337,10 @@ func Discover() ([]Session, error) {
 
 	// Get directories where Claude is currently running (TTL-cached to avoid
 	// spawning ps/lsof on every refresh).
-	runningDirs := cachedRunningClaudeDirs()
+	runningDirs, err := cachedRunningClaudeDirs()
+	if err != nil {
+		return nil, err
+	}
 
 	var sessions []Session
 	// Track the log files we actually parse this sweep so stale entries can be
@@ -426,68 +450,11 @@ func statusPriority(s Status) int {
 		return 1
 	case StatusWaiting:
 		return 2
-	case StatusIdle:
-		return 3
 	case StatusInactive:
-		return 4
+		return 3
 	default:
-		return 5
+		return 4
 	}
-}
-
-// findMostRecentLog finds the most recently modified .jsonl file in a directory
-func findMostRecentLog(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-
-	// Track both most recent non-empty and most recent overall
-	var mostRecent string
-	var mostRecentTime time.Time
-	var newestOverall string
-	var newestOverallTime time.Time
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		if !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-
-		// Skip agent files (subagents) - only track main sessions
-		if strings.HasPrefix(entry.Name(), "agent-") {
-			continue
-		}
-
-		filePath := filepath.Join(dir, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		// Track newest file regardless of size (for detecting fresh sessions)
-		if info.ModTime().After(newestOverallTime) {
-			newestOverallTime = info.ModTime()
-			newestOverall = filePath
-		}
-
-		// Track newest non-empty file
-		if info.Size() > 0 && info.ModTime().After(mostRecentTime) {
-			mostRecentTime = info.ModTime()
-			mostRecent = filePath
-		}
-	}
-
-	// If there's a newer empty file, a fresh session just started;
-	// return it so parseSession sees 0 entries and shows "-" context
-	if newestOverall != mostRecent && newestOverallTime.After(mostRecentTime) {
-		return newestOverall, nil
-	}
-
-	return mostRecent, nil
 }
 
 // activeLogFreshnessWindow is the second-chance window for a log file that
@@ -738,13 +705,15 @@ func parseSession(projectName, logFile string, isRunning bool, pid int) (Session
 
 	// Fetch the parsed log (single full-file pass), reusing the cache when the
 	// file is unchanged since it was last parsed.
+	// A read failure here is not the same as an idle session. isRunning and pid
+	// are already known and correct, and determineStatus turns "running process,
+	// no readable entries" into Waiting. Returning early skipped that and left
+	// the Inactive default, which ActiveSessions then filtered out entirely --
+	// so a session that was working, possibly sitting on an approval prompt,
+	// vanished from the dashboard and from the counts.
 	pl, err := cachedParseLogFile(logFile, info.ModTime(), info.Size(), 100)
 	if err != nil {
-		return session, nil // Return with defaults
-	}
-
-	if len(pl.entries) == 0 {
-		return session, nil
+		session.Degraded = err.Error()
 	}
 
 	applyParsedLog(&session, pl, isRunning, pid, info.ModTime())
@@ -770,9 +739,12 @@ func applyParsedLog(session *Session, pl parsedLog, isRunning bool, pid int, fil
 	session.ContextPercent = pl.contextPercent
 	session.ContextTokens = pl.contextTokens
 	session.Model = pl.model
+	if pl.model != "" {
+		session.ContextWindow = contextWindowForModel(pl.model)
+	}
 
 	// Time-relative + running-dependent: must be recomputed each call.
-	session.Status, session.Task, session.IsGhost = determineStatus(pl.entries, isRunning, fileModTime)
+	session.Status, session.Task = determineStatus(pl.entries, isRunning, fileModTime)
 
 	// A session that dispatched a subagent writes nothing to its own log until
 	// the result comes back, so determineStatus sees a stale file and reports
@@ -792,6 +764,11 @@ func applyParsedLog(session *Session, pl parsedLog, isRunning bool, pid int, fil
 	if !pl.lastEntryTime.IsZero() {
 		session.LastActivity = pl.lastEntryTime
 	}
+
+	// Derived last, once LastActivity has settled: a ghost is a live process
+	// whose log stopped moving long ago. determineStatus cannot decide this
+	// because it runs before lastEntryTime is applied.
+	session.IsGhost = isRunning && time.Since(session.LastActivity) > GhostThreshold
 }
 
 // extractLastAssistantMessage extracts the last text message from an assistant entry
@@ -995,9 +972,15 @@ func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
 	return family, maj, min, true
 }
 
-// GhostThreshold is the duration after which a running process with no log activity
-// is considered a ghost (orphaned) process
-const GhostThreshold = 10 * time.Minute
+// GhostThreshold is how long a running process's log must be silent before
+// --kill-ghosts will offer to terminate it.
+//
+// An hour is deliberately far beyond any normal pause. The cost of the two
+// mistakes is not symmetric: waiting longer to reap an orphan costs some idle
+// memory, while reaping too early kills a session someone is using. A model
+// can sit on a single long tool call, and a user can leave a session open over
+// lunch, without either being abandoned.
+const GhostThreshold = time.Hour
 
 // recentActivityWindow bounds every "Working" inference in determineStatus: a
 // tool result, user prompt, assistant message, or progress heartbeat only counts
@@ -1009,14 +992,14 @@ const recentActivityWindow = 2 * time.Minute
 // determineStatus analyzes log entries to determine session status.
 // fileModTime is the log file's modification time, used to detect recent writes
 // that may not yet appear as parsed entries (e.g., during streaming).
-// Returns: status, task description, and whether this is a ghost process.
-func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) (Status, string, bool) {
+// Returns the status and a short task description.
+func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) (Status, string) {
 	if len(entries) == 0 {
 		if isRunning {
 			// Process running but no log entries - new session starting up
-			return StatusWaiting, "-", false
+			return StatusWaiting, "-"
 		}
-		return StatusInactive, "-", false
+		return StatusInactive, "-"
 	}
 
 	var lastAssistant *LogEntry
@@ -1060,7 +1043,7 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 
 	// If Claude is not running, session is inactive
 	if !isRunning {
-		return StatusInactive, "-", false
+		return StatusInactive, "-"
 	}
 
 	// Check if assistant ended with tool_use (needs approval) - BEFORE ghost check
@@ -1096,7 +1079,7 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 				} else if time.Since(lastUser.Timestamp) < recentActivityWindow {
 					// No turn_duration marker yet, but the tool result is recent —
 					// Claude is very likely still working (about to continue the turn).
-					return StatusWorking, "Processing...", false
+					return StatusWorking, "Processing..."
 				}
 				// All tools resolved but the last result is stale and no
 				// turn_duration/end_turn followed. Claude commonly ends a turn here
@@ -1117,9 +1100,9 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 	// the tool is currently executing, not waiting for approval.
 	if hasPendingToolUse {
 		if lastAssistant != nil && time.Since(lastAssistant.Timestamp) < recentActivityWindow {
-			return StatusWorking, "Using: " + pendingToolName, false
+			return StatusWorking, "Using: " + pendingToolName
 		}
-		return StatusNeedsInput, "Using: " + pendingToolName, false
+		return StatusNeedsInput, "Using: " + pendingToolName
 	}
 
 	// Check if turn completed (system message with turn_duration).
@@ -1135,10 +1118,10 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 			// checks below, which resolve it to Waiting.
 			if lastUser != nil && lastUser.Timestamp.After(lastSystem.Timestamp) &&
 				time.Since(lastUser.Timestamp) < recentActivityWindow {
-				return StatusWorking, "Processing...", false
+				return StatusWorking, "Processing..."
 			}
 			if lastUser == nil || !lastUser.Timestamp.After(lastSystem.Timestamp) {
-				return StatusWaiting, "-", false
+				return StatusWaiting, "-"
 			}
 		}
 	}
@@ -1149,7 +1132,7 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 		lastAssistant.Message.StopReason == "end_turn" {
 		// Only if no newer user message (which would mean a new turn started)
 		if lastUser == nil || !lastUser.Timestamp.After(lastAssistant.Timestamp) {
-			return StatusWaiting, "-", false
+			return StatusWaiting, "-"
 		}
 	}
 
@@ -1158,21 +1141,21 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 	// A recent heartbeat is a strong signal that the session is working.
 	if lastProgress != nil && time.Since(lastProgress.Timestamp) < recentActivityWindow {
 		task := extractTask(lastAssistant)
-		return StatusWorking, task, false
+		return StatusWorking, task
 	}
 
 	// If the log file was recently modified (within 30s), the session is actively
 	// writing — even if parsed entries are stale (e.g., streaming writes in progress).
 	if !fileModTime.IsZero() && time.Since(fileModTime) < 30*time.Second {
 		task := extractTask(lastAssistant)
-		return StatusWorking, task, false
+		return StatusWorking, task
 	}
 
 	// If process is running but log is stale, it's Waiting (not ghost)
 	// The user may be away or thinking - this is a valid active session
 	// Ghost detection is only for --kill-ghosts to find truly orphaned processes
 	if time.Since(lastTimestamp) > 5*time.Minute {
-		return StatusWaiting, "-", false
+		return StatusWaiting, "-"
 	}
 
 	// If assistant is recent, it's working. Use 2-minute window to avoid
@@ -1180,7 +1163,7 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 	if lastAssistant != nil {
 		task := extractTask(lastAssistant)
 		if time.Since(lastAssistant.Timestamp) < recentActivityWindow {
-			return StatusWorking, task, false
+			return StatusWorking, task
 		}
 	}
 
@@ -1194,11 +1177,11 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 	// Waiting instead of staying pinned on "Working".
 	if lastUser != nil && (lastAssistant == nil || lastUser.Timestamp.After(lastAssistant.Timestamp)) {
 		if isUserPrompt(lastUser) && time.Since(lastUser.Timestamp) < recentActivityWindow {
-			return StatusWorking, "Processing...", false
+			return StatusWorking, "Processing..."
 		}
 	}
 
-	return StatusWaiting, "-", false
+	return StatusWaiting, "-"
 }
 
 // isUserPrompt reports whether a user log entry is a genuine user prompt
@@ -1251,29 +1234,43 @@ type GhostProcess struct {
 	Age     time.Duration
 }
 
-// FindGhostProcesses returns a list of potentially orphaned Claude processes
-// Uses a 1-hour threshold to identify processes with no recent log activity
+// FindGhostProcesses returns Claude processes that are running but whose log
+// has been silent for longer than GhostThreshold.
 func FindGhostProcesses() ([]GhostProcess, error) {
 	sessions, err := Discover()
 	if err != nil {
 		return nil, err
 	}
+	return ghostsFrom(sessions), nil
+}
 
+// ghostsFrom selects the stale sessions whose pid is certainly their own.
+//
+// Staleness is a property of the log, but the pid is paired to that log by
+// position: logs arrive sorted newest-first while pids arrive in ps order, and
+// the two orderings have no relationship. In a directory running one Claude the
+// pairing is the only one available and therefore correct; with several, the
+// stale log can carry the busy process's pid. Since the caller sends SIGTERM to
+// whatever this returns, an unconfident pairing is not "some pid for this
+// directory" -- it is a coin flip over which session dies.
+func ghostsFrom(sessions []Session) []GhostProcess {
 	var ghosts []GhostProcess
 	seenPIDs := make(map[int]bool)
 	for _, s := range sessions {
-		// Only consider sessions with a running process
 		if s.GhostPID == 0 {
 			continue
 		}
-		// Deduplicate PIDs (multiple sessions in same project may reference same PID)
+		if !s.PIDConfident {
+			continue
+		}
+		// Several sessions in one project can resolve to the same process.
 		if seenPIDs[s.GhostPID] {
 			continue
 		}
 		seenPIDs[s.GhostPID] = true
-		// Check if log is stale (> 1 hour since last activity)
+
 		age := time.Since(s.LastActivity)
-		if age > time.Hour {
+		if age > GhostThreshold {
 			ghosts = append(ghosts, GhostProcess{
 				PID:     s.GhostPID,
 				Project: s.Project,
@@ -1281,8 +1278,7 @@ func FindGhostProcesses() ([]GhostProcess, error) {
 			})
 		}
 	}
-
-	return ghosts, nil
+	return ghosts
 }
 
 // isClaudeProcess checks whether the given PID belongs to a process named "claude".
@@ -1296,37 +1292,51 @@ func isClaudeProcess(pid int) bool {
 	return strings.HasSuffix(comm, "claude")
 }
 
-// KillGhostProcesses terminates all ghost Claude processes
-// Returns the number of processes killed and any errors
-func KillGhostProcesses() ([]GhostProcess, error) {
+// KillGhostProcesses sends SIGTERM to every ghost process.
+//
+// It returns the processes it terminated and, separately, the ones it could
+// not. A process that refuses the signal (it belongs to another user, or it is
+// protected) is not the same as one that had already exited, and a command
+// whose whole job is killing things should not report a shortfall it declines
+// to explain.
+func KillGhostProcesses() (killed []GhostProcess, failed []GhostKillFailure, err error) {
 	ghosts, err := FindGhostProcesses()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var killed []GhostProcess
 	for _, ghost := range ghosts {
-		// Verify the PID still belongs to a claude process (guards against PID reuse)
+		// The pid may have been recycled by an unrelated process since Discover.
 		if !isClaudeProcess(ghost.PID) {
 			continue
 		}
 
-		// Send SIGTERM to gracefully terminate the process
-		process, err := os.FindProcess(ghost.PID)
-		if err != nil {
+		process, findErr := os.FindProcess(ghost.PID)
+		if findErr != nil {
+			failed = append(failed, GhostKillFailure{Ghost: ghost, Err: findErr})
 			continue
 		}
 
-		err = process.Signal(syscall.SIGTERM)
-		if err != nil {
-			// Process might already be gone
+		if sigErr := process.Signal(syscall.SIGTERM); sigErr != nil {
+			// ESRCH means it exited on its own between listing and signalling,
+			// which is the one failure that needs no explanation.
+			if !errors.Is(sigErr, os.ErrProcessDone) && !errors.Is(sigErr, syscall.ESRCH) {
+				failed = append(failed, GhostKillFailure{Ghost: ghost, Err: sigErr})
+			}
 			continue
 		}
 
 		killed = append(killed, ghost)
 	}
 
-	return killed, nil
+	return killed, failed, nil
+}
+
+// GhostKillFailure is a ghost process that would not accept SIGTERM, paired
+// with the reason.
+type GhostKillFailure struct {
+	Ghost GhostProcess
+	Err   error
 }
 
 // FormatAge formats a duration as a human-readable age string
@@ -1341,18 +1351,4 @@ func FormatAge(d time.Duration) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
-}
-
-// GetGhostPIDs returns just the PIDs of ghost processes (for simple listing)
-func GetGhostPIDs() ([]int, error) {
-	ghosts, err := FindGhostProcesses()
-	if err != nil {
-		return nil, err
-	}
-
-	pids := make([]int, len(ghosts))
-	for i, g := range ghosts {
-		pids[i] = g.PID
-	}
-	return pids, nil
 }

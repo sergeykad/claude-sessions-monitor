@@ -182,7 +182,11 @@ func (h *SSEHub) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		live := filterLiveSessions(allSessions)
 		data, err := json.Marshal(live)
 		if err == nil {
-			w.Write(formatSSE("sessions", data))
+			// A failed write means the client is already gone. Returning here
+			// would leave it registered with the hub, because the unregister
+			// defer is not set until below; the r.Context().Done() case takes
+			// it off moments later.
+			_, _ = w.Write(formatSSE("sessions", data))
 			flusher.Flush()
 		}
 	}
@@ -203,7 +207,7 @@ func (h *SSEHub) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			w.Write(msg)
+			_, _ = w.Write(msg)
 			flusher.Flush()
 		}
 	}

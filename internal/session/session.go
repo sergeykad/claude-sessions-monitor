@@ -240,10 +240,8 @@ func getRunningClaudeDirs() (map[string][]int, error) {
 			continue
 		}
 
-		pidStr := string(fields[0])
-		pid := 0
-		fmt.Sscanf(pidStr, "%d", &pid)
-		if pid == 0 {
+		pid, err := strconv.Atoi(string(fields[0]))
+		if err != nil || pid == 0 {
 			continue
 		}
 
@@ -601,7 +599,7 @@ func parseLogFileWithLimit(logFile string, keep int, maxLineBytes int) (parsedLo
 	if err != nil {
 		return parsedLog{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var pl parsedLog
 	var entries []LogEntry

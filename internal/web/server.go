@@ -89,7 +89,9 @@ func (s *Server) Start(ctx context.Context) (<-chan error, error) {
 	// Shut down when context is cancelled
 	go func() {
 		<-ctx.Done()
-		s.server.Close()
+		// Close only reports errors from connections of a server that is
+		// already being torn down.
+		_ = s.server.Close()
 	}()
 
 	return errCh, nil
@@ -152,6 +154,6 @@ func ProbeCSMServer(port int) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }

@@ -410,5 +410,7 @@ func openBrowser(url string) {
 	default:
 		return
 	}
-	cmd.Start()
+	// A failure has nowhere to go from here: this runs with the alternate
+	// screen up, where the next frame overwrites anything printed.
+	_ = cmd.Start()
 }

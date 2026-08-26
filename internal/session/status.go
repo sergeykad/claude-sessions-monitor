@@ -54,7 +54,7 @@ func fetchClaudeStatusUncached() *ClaudeStatus {
 	if err != nil {
 		return &ClaudeStatus{Available: false, Error: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

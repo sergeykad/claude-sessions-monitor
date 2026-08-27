@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- The terminal size comes from `golang.org/x/term` instead of a hand-rolled `TIOCGWINSZ` ioctl with an `unsafe.Pointer`. `internal/ui` now compiles for Windows as a side effect
+- The terminal size comes from `golang.org/x/term`, so `internal/ui/terminal.go` no longer depends on `syscall` and `unsafe`
 - `QuickSessionStats` returns a struct and an error instead of six positional values, three of them adjacent strings that could be swapped without the compiler noticing
 
 ### Removed

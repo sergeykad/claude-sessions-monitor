@@ -31,7 +31,11 @@ linters:
         - G304
   exclusions:
     rules:
+      # Tests write their fixtures into a t.TempDir() no other account can
+      # reach, so the permission floors have nothing to protect there. Only
+      # those three rules are lifted; the rest of gosec still reads test code.
       - path: _test\.go
+        text: "^G30[126]:"
         linters:
           - gosec
 

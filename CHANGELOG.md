@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - CI, release, license and Buy Me a Coffee badges plus a support section in the README.
-- `golangci-lint` runs in CI and in `make check`, configured in `.golangci.yml`. It runs twice — once for the host and once for `GOOS=darwin` — because the jump feature is macOS-only and a Linux-only pass never type-checks it. The config carries no baseline: `main` reports zero findings, and a finding that is correct as written is annotated at the site with the reason
+- `golangci-lint` runs in CI and in `make check`, once for `GOOS=linux` and once for `GOOS=darwin` so the macOS-only jump code is covered
 
 ### Security
 

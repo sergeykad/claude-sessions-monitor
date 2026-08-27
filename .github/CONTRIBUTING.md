@@ -25,10 +25,14 @@ external dependencies.
 4. Open a pull request
 
 `make lint` runs [golangci-lint](https://golangci-lint.run) against the config
-in `.golangci.yml`, once for the host and once for `GOOS=darwin` — the jump
-feature is macOS-only, and a Linux-only pass never type-checks it. The pinned
-version is built with Go 1.26, so the first run installs that toolchain;
-`GOTOOLCHAIN=local` prevents this and the install fails.
+in `.golangci.yml`, once for `GOOS=linux` and once for `GOOS=darwin`. The jump
+feature is macOS-only and its stub is everything-else-only, so whichever GOOS a
+single pass picks, it leaves the other file untyped. Both are named so the pair
+is the same on a macOS machine as on a Linux one. Nothing here is constrained
+by architecture, so the pinned `GOARCH` serves only to keep the host's out of
+the result too. The pinned version is built
+with Go 1.26, so the first run installs that toolchain; `GOTOOLCHAIN=local`
+prevents this and the install fails.
 
 The config carries no baseline, so `main` is expected to report zero findings.
 A finding that is correct as written gets a `//nolint:<linter>` with the reason

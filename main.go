@@ -275,11 +275,10 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 				if viewMode != ViewModeLive || selected < 0 || selected >= len(visible) {
 					break
 				}
-				// err is always non-nil on !darwin, where jump_other.go's
-				// Focus is a stub. The success branch below is live on
-				// darwin, so it must not be deleted as unreachable.
-				res, err := jump.Focus(visible[selected]) //nolint:staticcheck // SA4023
-				if err != nil {                           //nolint:staticcheck // SA4023
+				// err is always non-nil on !darwin, where jump_other.go's Focus
+				// is a stub.
+				res, err := jump.Focus(visible[selected])
+				if err != nil {
 					jumpMsg = err.Error()
 				} else {
 					jumpMsg = res.Message()

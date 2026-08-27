@@ -57,10 +57,16 @@ func SaveOrigin(sessionID string, o Origin) error {
 	if err != nil {
 		return err
 	}
-	// The store holds one file per session naming that session's terminal and
-	// working directory, so it is readable only by the user it describes.
+	// The store holds one file per session, named by that session's id, so its
+	// listing is kept to the user it describes. MkdirAll sets a mode only on
+	// directories it creates; the Chmod is what an already-existing store gets.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create origin store dir: %w", err)
+	}
+	// G302 wants 0600, which a directory cannot use: without the execute bit
+	// the owner cannot enter it.
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302
+		return fmt.Errorf("restrict origin store dir: %w", err)
 	}
 	data, err := json.Marshal(o)
 	if err != nil {

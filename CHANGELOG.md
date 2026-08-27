@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- The origin store is created with `0700` rather than `0755`. Each file in it names a session's terminal and working directory, which was readable by every account on the machine
+- The origin store directory is created `0700` rather than `0755`, and an existing one is repaired on the next save. Other accounts could list the session ids it held; the files themselves were already `0600`
 - `--kill-ghosts` could terminate a session that was actively working. Logs are sorted newest-first and pids arrive in `ps` order, and the two were paired by index, so in a project running several Claude processes the stale log could carry the busy process's pid. Ghost reporting now honours the same `PIDConfident` check that jump already used, and reports which processes refused the signal rather than only counting the ones that accepted it
 - A running session whose log could not be read vanished from the dashboard and from the summary counts, because the read failure left it marked Inactive and inactive sessions are filtered out. Such rows now stay visible, marked `[?]` to show their numbers are incomplete
 - `csm` reported "No active Claude sessions." with complete confidence when the `ps` scan itself failed, and the live view discarded discovery errors on every frame. Both now say what went wrong

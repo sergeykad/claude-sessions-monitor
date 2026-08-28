@@ -213,7 +213,8 @@ func ClaudeProjectsDir() (string, error) {
 }
 
 // procInfo is one live process, holding the three fields the pairing and ghost
-// rules read.
+// rules read. comm is the name the OS accounts the process under: a basename,
+// truncated to 15 bytes on Linux and 16 on macOS.
 type procInfo struct {
 	pid, ppid int
 	comm      string
@@ -226,17 +227,8 @@ type procInfo struct {
 // See listprocs_linux.go and listprocs_darwin.go for the implementations.
 var listProcesses = listProcessesNative
 
-// errCwdLookupBroken marks a working-directory lookup that failed for a reason
-// that is not about the one process asked about.
-//
-// A process that exits mid-scan, or that belongs to another user, is ordinary
-// and gets skipped. A lookup tool that is not installed fails for every process
-// alike, and the empty map that leaves behind reads downstream as a machine
-// with no Claude session running.
-var errCwdLookupBroken = errors.New("the working directory lookup is unavailable")
-
-// getProcessCwdFn is a var so a test can drive the broken-lookup case, which on
-// macOS is lsof missing from PATH.
+// getProcessCwdFn is the per-process working-directory lookup. A var so a test
+// can drive getRunningClaudeDirs without a real process behind each pid.
 var getProcessCwdFn = getProcessCwd
 
 // isClaudeComm reports whether a process name belongs to Claude Code.
@@ -274,8 +266,13 @@ func getRunningClaudeDirs() (map[string][]int, map[int]bool, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("scanning processes: %w", err)
 	}
+	// A platform that returns an empty list with no error puts back the bug this
+	// whole path exists to remove, so the invariant is checked here rather than
+	// trusted to each implementation.
+	if len(procs) == 0 {
+		return nil, nil, errors.New("scanning processes: the process table came back empty")
+	}
 
-	lookupBroken := false
 	for _, row := range procs {
 		if !isClaudeComm(row.comm) {
 			continue
@@ -287,23 +284,11 @@ func getRunningClaudeDirs() (map[string][]int, map[int]bool, error) {
 		// Get cwd for each process
 		path, err := getProcessCwdFn(row.pid)
 		if err != nil || path == "" {
-			if errors.Is(err, errCwdLookupBroken) {
-				lookupBroken = true
-			}
 			continue
 		}
 		// Convert to encoded format (same as project directory names)
 		encoded := encodeProjectPath(path)
 		dirs[encoded] = append(dirs[encoded], row.pid)
-	}
-
-	// A working directory that cannot be read leaves its process out of the map,
-	// and an empty map reads downstream as "no Claude session is running". Only
-	// a broken lookup counts here: another user's process refusing the read is
-	// ordinary, and reporting that would put an error on screen for a machine
-	// where "no sessions of yours" is the truth.
-	if lookupBroken && len(dirs) == 0 {
-		return nil, nil, errors.New("no Claude session could be located: the working directory lookup is unavailable")
 	}
 
 	return dirs, orphaned, nil

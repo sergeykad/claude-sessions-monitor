@@ -186,8 +186,10 @@ build-tagged file is a build error.
   Claude Code OAuth token from the macOS Keychain or
   `~/.claude/.credentials.json`. Each reports why it failed, so a platform csm
   cannot read is not reported as "no token found".
-- `browser_darwin.go` / `browser_linux.go` / `browser_other.go`: hand a URL to
-  the desktop's default browser (`open`, `xdg-open`).
+- `browser_unix.go` (`linux || darwin`) holds `openBrowser`; `browser_darwin.go`
+  and `browser_linux.go` each supply only the `browserOpener` constant (`open`,
+  `xdg-open`); `browser_other.go` reports that there is none. Splitting a shared
+  body from a per-OS constant beats copying the body once per OS.
 - `jump/jump_darwin.go` / `jump_other.go`: focus a terminal tab, or report
   that we can't.
 
@@ -354,7 +356,8 @@ Fixture helpers already exist; use them rather than hand-rolling JSONL:
 | `timelineFixture` | `web/handlers_test.go` | a log under a fake `$HOME` for the handlers |
 
 Seams for the things you can't drive from a test: `listProcesses` (the process
-scan), `procRoot` (procfs, Linux only), `originStoreDirFn`, `parseLogFileWithLimit` (trigger the oversized-line
+scan), `getProcessCwdFn`, `procRoot` (procfs, Linux only), `browserCommand`,
+`originStoreDirFn`, `parseLogFileWithLimit` (trigger the oversized-line
 path without writing 10 MB), `web.discoverSessions`. Swap them and restore in
 `t.Cleanup`.
 

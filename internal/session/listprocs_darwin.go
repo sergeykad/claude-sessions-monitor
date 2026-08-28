@@ -3,7 +3,6 @@
 package session
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -19,6 +18,14 @@ import (
 // scan look identical downstream: every session would be marked inactive and
 // csm would report no running sessions.
 func listProcessesNative() ([]procInfo, error) {
+	// A scan without lsof is useless: every working directory below would fail
+	// to resolve, leaving an empty map that reads downstream as a machine with
+	// no Claude session running. Checked once here, where it is a property of
+	// the scan, rather than inferred from a run of per-process failures.
+	if _, err := exec.LookPath("lsof"); err != nil {
+		return nil, fmt.Errorf("lsof is needed to read a process working directory: %w", err)
+	}
+
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
 		return nil, fmt.Errorf("sysctl kern.proc.all: %w", err)
@@ -45,7 +52,7 @@ func processComm(pid int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sysctl kern.proc.pid %d: %w", pid, err)
 	}
-	return commString(proc.Proc.P_comm[:]), nil
+	return unix.ByteSliceToString(proc.Proc.P_comm[:]), nil
 }
 
 // kinfoToProcInfo copies the three fields this package reads out of a kinfo_proc.
@@ -61,16 +68,8 @@ func kinfoToProcInfo(p *unix.KinfoProc) procInfo {
 	return procInfo{
 		pid:  int(p.Proc.P_pid),
 		ppid: int(p.Eproc.Ppid),
-		comm: commString(p.Proc.P_comm[:]),
+		comm: unix.ByteSliceToString(p.Proc.P_comm[:]),
 	}
-}
-
-// commString reads a fixed-width C string up to its NUL terminator.
-func commString(b []byte) string {
-	if i := bytes.IndexByte(b, 0); i >= 0 {
-		b = b[:i]
-	}
-	return string(b)
 }
 
 // getProcessCwd returns the working directory of a process.
@@ -81,13 +80,6 @@ func commString(b []byte) string {
 func getProcessCwd(pid int) (string, error) {
 	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		// lsof exiting non-zero is about this one process: it refuses another
-		// user's, among others. Anything else means lsof did not run at all,
-		// so every lookup this scan makes will fail the same way.
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			return "", fmt.Errorf("%w: %w", errCwdLookupBroken, err)
-		}
 		return "", err
 	}
 

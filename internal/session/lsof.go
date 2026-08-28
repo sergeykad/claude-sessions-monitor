@@ -5,16 +5,17 @@ import (
 	"errors"
 )
 
-// lsofNameColumn is the 1-based index of lsof's NAME column, which holds the
-// path. COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME.
-const lsofNameColumn = 9
+// lsofFieldsBeforeName is how many whitespace-free columns come before NAME:
+// COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE.
+const lsofFieldsBeforeName = 8
 
 // parseLsofCwd pulls the working directory out of `lsof -p <pid>` output.
 //
 // NAME is the last column, so the path is the whole rest of the line. Reading
 // it as the last whitespace-separated field instead turns a directory called
 // "/Users/x/My Project" into "Project", and csm then keys that session under a
-// project that does not exist.
+// project that does not exist. Splitting on whitespace and rejoining is the
+// same bug in another form: it collapses runs of spaces inside the path.
 //
 // This lives outside the darwin file so it can be tested anywhere, since lsof
 // itself cannot be run in a test.
@@ -23,18 +24,24 @@ func parseLsofCwd(out []byte) (string, error) {
 		if !bytes.Contains(line, []byte(" cwd ")) {
 			continue
 		}
-		rest := bytes.TrimLeft(line, " \t")
-		for i := 1; i < lsofNameColumn && rest != nil; i++ {
-			gap := bytes.IndexAny(rest, " \t")
-			if gap < 0 {
-				rest = nil
-				break
-			}
-			rest = bytes.TrimLeft(rest[gap:], " \t")
-		}
-		if path := bytes.TrimRight(rest, " \t\r"); len(path) > 0 {
+		if path := fieldTail(line, lsofFieldsBeforeName); len(path) > 0 {
 			return string(path), nil
 		}
 	}
 	return "", errors.New("no cwd line in lsof output")
+}
+
+// fieldTail returns what is left of a line after skipping that many
+// whitespace-separated fields, with the surrounding whitespace trimmed. It
+// returns nil when the line runs out first.
+func fieldTail(line []byte, skip int) []byte {
+	rest := bytes.TrimLeft(line, " \t")
+	for range skip {
+		gap := bytes.IndexAny(rest, " \t")
+		if gap < 0 {
+			return nil
+		}
+		rest = bytes.TrimLeft(rest[gap:], " \t")
+	}
+	return bytes.TrimRight(rest, " \t\r")
 }

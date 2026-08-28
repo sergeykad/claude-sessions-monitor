@@ -14,7 +14,15 @@ import (
 // that the file is somewhere else or unreadable.
 func TestGetOAuthTokenSaysWhyTheCredentialsAreUnavailable(t *testing.T) {
 	t.Run("credentials are there", func(t *testing.T) {
-		writeCredentials(t, `{"claudeAiOauth":{"accessToken":"sk-ant-oat-abc"}}`)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		creds := filepath.Join(home, ".claude", ".credentials.json")
+		if err := os.WriteFile(creds, []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat-abc"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
 		token, err := GetOAuthToken()
 		if err != nil {
@@ -59,20 +67,6 @@ func TestGetOAuthTokenSaysWhyTheCredentialsAreUnavailable(t *testing.T) {
 			t.Errorf("the error does not name the file it could not read: %v", err)
 		}
 	})
-}
-
-// writeCredentials puts a credentials file in a home directory of the test's own.
-func writeCredentials(t *testing.T, contents string) {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".claude")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // The quota panel is where the reason reaches the user. Carrying a generic

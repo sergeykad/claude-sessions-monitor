@@ -3,11 +3,8 @@
 package session
 
 import (
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -134,27 +131,30 @@ func TestListProcessesNativeSkipsAProcessThatExitedMidScan(t *testing.T) {
 // either came back as an empty list, csm would print "No active Claude
 // sessions." with full confidence while sessions ran.
 func TestListProcessesNativeReportsABrokenProcfs(t *testing.T) {
-	tests := []struct {
-		name string
-		root func(t *testing.T) string
-	}{
-		{
-			name: "procfs is not there",
-			root: func(t *testing.T) string { return filepath.Join(t.TempDir(), "no-such-procfs") },
-		},
-		{
-			name: "procfs lists no processes",
-			root: func(t *testing.T) string { return t.TempDir() },
-		},
+	tests := map[string]string{
+		"procfs is not there":       filepath.Join(t.TempDir(), "no-such-procfs"),
+		"procfs lists no processes": t.TempDir(),
+		"every process entry is unreadable": func() string {
+			// A directory where the stat file belongs fails the read for every
+			// user, root included, so the test does not depend on who runs it.
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "101", "stat"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return root
+		}(),
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			procRootFor(t, tt.root(t))
+	for name, root := range tests {
+		t.Run(name, func(t *testing.T) {
+			procRootFor(t, root)
 
 			procs, err := listProcessesNative()
 			if err == nil {
 				t.Fatalf("scan returned %d processes and no error", len(procs))
+			}
+			if name == "every process entry is unreadable" && !strings.Contains(err.Error(), "could be read") {
+				t.Errorf("an unreadable procfs is reported as an empty one: %v", err)
 			}
 		})
 	}
@@ -214,86 +214,6 @@ func writeProcEntry(t *testing.T, root, pid, stat string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(stat), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// The orphan set, the claude filter and the cwd-to-project mapping are what
-// the dashboard reads. A process filtered wrongly vanishes from the dashboard,
-// and an orphan flag read from the wrong field badges every session a ghost or
-// none of them.
-func TestGetRunningClaudeDirsFiltersAndFlagsWhatTheDashboardShows(t *testing.T) {
-	root := t.TempDir()
-	// 101: a claude whose parent is gone. 202: a claude with a live parent.
-	// 303: not claude at all. All three share a working directory.
-	writeProcEntry(t, root, "101", "101 (claude) S 1 101\n")
-	writeProcEntry(t, root, "202", "202 (claude) S 900 202\n")
-	writeProcEntry(t, root, "303", "303 (bash) S 1 303\n")
-	for _, pid := range []string{"101", "202", "303"} {
-		// os.Readlink does not resolve the target, so it need not exist.
-		if err := os.Symlink("/home/u/proj", filepath.Join(root, pid, "cwd")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	procRootFor(t, root)
-
-	dirs, orphaned, err := getRunningClaudeDirs()
-	if err != nil {
-		t.Fatalf("getRunningClaudeDirs: %v", err)
-	}
-
-	encoded := encodeProjectPath("/home/u/proj")
-	got := dirs[encoded]
-	sort.Ints(got)
-	if len(got) != 2 || got[0] != 101 || got[1] != 202 {
-		t.Errorf("pids for %s = %v, want [101 202]; bash must not be counted as a session", encoded, got)
-	}
-	if len(dirs) != 1 {
-		t.Errorf("got %d project keys, want 1: %v", len(dirs), dirs)
-	}
-	if !orphaned[101] {
-		t.Error("the claude whose parent is gone is not flagged an orphan, so it can never be badged a ghost")
-	}
-	if orphaned[202] {
-		t.Error("a claude with a live parent is flagged an orphan, which badges a session left open overnight as a ghost")
-	}
-}
-
-// A cwd lookup that is unavailable, which on macOS is lsof missing from PATH,
-// leaves every process out of the map. Returned as an empty map it reads as
-// "no Claude session is running", which csm would then print while sessions ran.
-//
-// A process merely refusing the read is the opposite case and must stay silent:
-// on a shared machine another user's claude is not a fault, and an error on
-// screen would be wrong for a machine where "no sessions of yours" is true.
-func TestGetRunningClaudeDirsSeparatesABrokenLookupFromARefusedOne(t *testing.T) {
-	tests := []struct {
-		name       string
-		cwdErr     error
-		wantReport bool
-	}{
-		{"the lookup tool is not installed", fmt.Errorf("%w: exec: lsof: not found", errCwdLookupBroken), true},
-		{"another user's process refuses the read", fs.ErrPermission, false},
-		{"the process exited mid-scan", fs.ErrNotExist, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			writeProcEntry(t, root, "101", "101 (claude) S 1 101\n")
-			procRootFor(t, root)
-
-			original := getProcessCwdFn
-			t.Cleanup(func() { getProcessCwdFn = original })
-			getProcessCwdFn = func(int) (string, error) { return "", tt.cwdErr }
-
-			dirs, _, err := getRunningClaudeDirs()
-			if tt.wantReport && err == nil {
-				t.Fatalf("a broken lookup gave dirs=%v and no error", dirs)
-			}
-			if !tt.wantReport && err != nil {
-				t.Fatalf("a process refusing the read was reported as a failure: %v", err)
-			}
-		})
 	}
 }
 

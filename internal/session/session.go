@@ -50,7 +50,7 @@ type Session struct {
 	Origin       Origin    `json:"origin,omitempty"`     // Where the session was launched from
 	IsGhost      bool      `json:"is_ghost,omitempty"`   // True if process running but log is stale
 	GhostPID     int       `json:"ghost_pid,omitempty"`  // PID of the ghost process (for killing)
-	PIDConfident bool      `json:"-"`                    // True when GhostPID is certainly this session's process, not a positional guess
+	PIDConfident bool      `json:"pid_confident"`        // True when GhostPID is certainly this session's process, not a positional guess
 	// ContextWindow is the model's context size in tokens. The dashboard needs
 	// the decision, not the model id: reimplementing the id parsing in
 	// JavaScript let the two disagree about the same session.
@@ -344,9 +344,11 @@ func Discover() ([]Session, error) {
 		return nil, err
 	}
 
-	// Get directories where Claude is currently running (TTL-cached to avoid
-	// spawning ps/lsof on every refresh).
-	runningDirs, err := cachedRunningClaudeDirs()
+	// Get directories where Claude is currently running, along with Claude
+	// Code's own pid <-> session registry when this version writes one. Both
+	// come from one TTL-cached snapshot so they cannot disagree about what is
+	// running, and so ps/lsof are not spawned on every refresh.
+	runningDirs, registry, haveRegistry, err := cachedRunningClaudeDirs()
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +375,21 @@ func Discover() ([]Session, error) {
 		if err != nil || len(logFiles) == 0 {
 			continue
 		}
+		if haveRegistry {
+			// A live session that has been quiet longer than the freshness
+			// window loses its positional slot to any fresher log, including
+			// one from a session that already exited. The registry knows it
+			// is alive, so list it regardless.
+			present := make(map[string]bool, len(logFiles))
+			for _, f := range logFiles {
+				present[f] = true
+			}
+			for _, f := range registryLogsForDir(registry, projectDir) {
+				if !present[f] {
+					logFiles = append(logFiles, f)
+				}
+			}
+		}
 
 		for i, logFile := range logFiles {
 			liveFiles[logFile] = struct{}{}
@@ -392,17 +409,15 @@ func Discover() ([]Session, error) {
 			// wrongly showing Inactive. Only carry a specific pid through
 			// (for GhostPID / --kill-ghosts) when the pairing is one we're
 			// actually confident in.
-			isRunning := len(pids) > 0
-			pid := 0
-			if i < len(pids) {
-				pid = pids[i]
-			}
-			// The pairing above is positional, so it only actually identifies a
-			// process when there's exactly one candidate on each side. Anything
-			// that needs to be *right* about which process belongs to this
-			// session (rather than merely "some pid for this directory", which
-			// is all --kill-ghosts needs) must check this first.
-			pidConfident := len(pids) == 1 && len(logFiles) == 1
+			// With a registry the pairing is exact and per-session; without
+			// one it is the positional guess described above, and only
+			// identifies a process when there's exactly one candidate on
+			// each side. Anything that needs to be *right* about which
+			// process belongs to this session (rather than merely "some pid
+			// for this directory", which is all --kill-ghosts needs) must
+			// check PIDConfident first.
+			isRunning, pid, pidConfident := pairProcess(
+				sessionIDFromLogFile(logFile), entry.Name(), registry, haveRegistry, pids, i, len(logFiles))
 
 			session, err := parseSession(entry.Name(), logFile, isRunning, pid)
 			if err != nil {

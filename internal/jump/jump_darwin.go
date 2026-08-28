@@ -165,7 +165,9 @@ func runOsascript(script string, args ...string) (string, error) {
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("Ghostty didn't respond in time")
+		// Capitalised because Ghostty is the application's name, which is the
+		// one thing this message has to get right for the user to act on it.
+		return "", errors.New("Ghostty didn't respond in time") //nolint:staticcheck // ST1005
 	}
 	if err != nil {
 		return "", osascriptError(err)

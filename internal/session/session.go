@@ -137,7 +137,10 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	// Parse as array, handling both object and string elements
 	var rawItems []json.RawMessage
 	if err := json.Unmarshal(m.RawContent, &rawItems); err != nil {
-		return nil
+		// A content shape this parser does not know costs one message's text,
+		// not the session: returning the error would abort the whole log and
+		// blank a dashboard row over a field nothing here reads.
+		return nil //nolint:nilerr
 	}
 
 	var items []ContentItem
@@ -240,10 +243,8 @@ func getRunningClaudeDirs() (map[string][]int, error) {
 			continue
 		}
 
-		pidStr := string(fields[0])
-		pid := 0
-		fmt.Sscanf(pidStr, "%d", &pid)
-		if pid == 0 {
+		pid, err := strconv.Atoi(string(fields[0]))
+		if err != nil || pid == 0 {
 			continue
 		}
 
@@ -601,7 +602,7 @@ func parseLogFileWithLimit(logFile string, keep int, maxLineBytes int) (parsedLo
 	if err != nil {
 		return parsedLog{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var pl parsedLog
 	var entries []LogEntry
@@ -963,13 +964,12 @@ func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
 	if err != nil {
 		return "", 0, 0, false
 	}
-	min := 0
 	if len(parts) >= 3 {
 		if v, err := strconv.Atoi(parts[2]); err == nil {
-			min = v
+			minor = v
 		}
 	}
-	return family, maj, min, true
+	return family, maj, minor, true
 }
 
 // GhostThreshold is how long a running process's log must be silent before

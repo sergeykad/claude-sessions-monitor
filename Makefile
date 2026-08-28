@@ -1,4 +1,4 @@
-.PHONY: build build-all install packages clean fmt check
+.PHONY: build build-all install packages clean fmt lint check
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -10,10 +10,33 @@ PKG_VERSION := $(patsubst v%,%,$(VERSION))
 fmt:
 	gofmt -w .
 
+# Pinned to match .github/workflows/ci.yaml — a lint gate that reports
+# different findings locally and in CI is worse than none.
+GOLANGCI_LINT_VERSION := v2.13.1
+# go install writes to GOBIN when it is set, and to GOPATH/bin otherwise.
+GOLANGCI_LINT := $(or $(shell go env GOBIN),$(shell go env GOPATH)/bin)/golangci-lint
+
+# golangci-lint v2.13.1 is built with Go 1.26, so `go install` fetches that
+# toolchain on a 1.25 machine. GOTOOLCHAIN=local blocks that and the install
+# fails; leave GOTOOLCHAIN at its default.
+#
+# Build tags hide code from a single pass: internal/jump's real implementation
+# is darwin-only and its stub is !darwin, so whichever GOOS runs, the other's
+# file goes untyped. Naming both, rather than letting one of them be the host,
+# is what makes a macOS machine lint the same pair a Linux one does. No file
+# here is constrained by architecture, so GOARCH is pinned for that reason
+# alone: to keep the host's out of the result.
+lint:
+	@$(GOLANGCI_LINT) --version 2>/dev/null | grep -q ' $(patsubst v%,%,$(GOLANGCI_LINT_VERSION)) ' || \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	GOOS=linux GOARCH=amd64 $(GOLANGCI_LINT) run ./...
+	GOOS=darwin GOARCH=arm64 $(GOLANGCI_LINT) run ./...
+
 # Everything CI enforces, runnable locally before pushing
 check:
 	@gofmt -l . | grep . && { echo "Not gofmt-clean — run 'make fmt'"; exit 1; } || true
 	go vet ./...
+	$(MAKE) lint
 	go build $(LDFLAGS) -o /dev/null .
 	go test ./...
 

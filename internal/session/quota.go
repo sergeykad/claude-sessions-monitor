@@ -197,7 +197,7 @@ func fetchAPIQuotaUncached() *APIQuota {
 	if err != nil {
 		return &APIQuota{Available: false, Error: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -288,7 +288,7 @@ func scanLogTokens(logFile string, windowStart time.Time) (input, output, cache 
 	if err != nil {
 		return 0, 0, 0, false, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 0, 64*1024)

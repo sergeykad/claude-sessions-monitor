@@ -20,7 +20,9 @@ func writeJSON(w http.ResponseWriter, v any) {
 func writeError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	// The status line is already sent, so a failed encode has nowhere left to
+	// report to: the client gets the code and a truncated body.
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // liveRetention is how long a stopped session remains visible in the live view.

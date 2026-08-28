@@ -62,7 +62,8 @@ func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFoot
 	}
 	fmt.Fprintf(&buf, "%s━━━ %s %s%s%s", Dim, sectionHeader, strings.Repeat("━", separatorLen), Reset, nl)
 
-	if usage != nil && usage.TotalTokens > 0 {
+	switch {
+	case usage != nil && usage.TotalTokens > 0:
 		fmt.Fprintf(&buf, "  Total tokens:  %s (input: %s | output: %s | cache: %s)%s",
 			formatTokenCount(usage.TotalTokens),
 			formatTokenCount(usage.InputTokens),
@@ -93,12 +94,12 @@ func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFoot
 				l.total, formatTokenCount(su.TotalTokens))
 			buf.WriteString(row + nl)
 		}
-	} else if usage != nil && usage.Err != "" {
+	case usage != nil && usage.Err != "":
 		// Saying "no usage" here would be a positive claim invented from a
 		// failure to look.
 		fmt.Fprintf(&buf, "  %sLocal usage unavailable (%s)%s%s",
 			Dim, sanitizeForTerminal(usage.Err), Reset, nl)
-	} else {
+	default:
 		fmt.Fprintf(&buf, "  %sNo token usage in the past 5 hours.%s%s", Dim, Reset, nl)
 	}
 

@@ -57,8 +57,16 @@ func SaveOrigin(sessionID string, o Origin) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// The store holds one file per session, named by that session's id, so its
+	// listing is kept to the user it describes. MkdirAll sets a mode only on
+	// directories it creates; the Chmod is what an already-existing store gets.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create origin store dir: %w", err)
+	}
+	// G302 wants 0600, which a directory cannot use: without the execute bit
+	// the owner cannot enter it.
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302
+		return fmt.Errorf("restrict origin store dir: %w", err)
 	}
 	data, err := json.Marshal(o)
 	if err != nil {
@@ -70,9 +78,9 @@ func SaveOrigin(sessionID string, o Origin) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op if rename succeeded
+	defer func() { _ = os.Remove(tmpName) }() // no-op if rename succeeded
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

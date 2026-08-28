@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `golangci-lint` runs in CI and in `make check`, once for `GOOS=linux` and once for `GOOS=darwin` so the macOS-only jump code is covered
+
+### Changed
+
+- The terminal size comes from `golang.org/x/term`, so `internal/ui/terminal.go` no longer depends on `syscall` and `unsafe`
+
+### Fixed
+
+- The origin store directory is created `0700` rather than `0755`, and an existing one is repaired on the next save. Other accounts could list the session ids it held; the files themselves were already `0600`
+
 ## [0.6.0] - 2026-08-26
 
 ### Added

@@ -22,7 +22,7 @@ func TestParseSessionKeepsRunningSessionWhenLogIsUnreadable(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(logFile, 0o644) })
 
 	if f, err := os.Open(logFile); err == nil {
-		f.Close()
+		_ = f.Close()
 		t.Skip("filesystem does not enforce permissions; cannot simulate a read failure")
 	}
 

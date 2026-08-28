@@ -105,7 +105,7 @@ func parseTimelineInternal(logFile string, offset, limit int, entryType string) 
 	if err != nil {
 		return nil, 0, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 0, 64*1024)
@@ -166,7 +166,7 @@ func parseMetricsInternal(logFile string) (*SessionMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	m := &SessionMetrics{
 		ToolUsageCounts: make(map[string]int),

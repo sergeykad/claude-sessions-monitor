@@ -87,12 +87,11 @@ func main() {
 
 	// Headless web-only mode (no terminal UI)
 	if *webOnly {
-		runWebOnly(*webPort)
-		return
+		os.Exit(runWebOnly(*webPort))
 	}
 
 	// Live view mode
-	runLiveView(*interval, *webMode, *webPort)
+	os.Exit(runLiveView(*interval, *webMode, *webPort))
 }
 
 // ViewMode represents the current display mode
@@ -104,7 +103,11 @@ const (
 	ViewModeUsage
 )
 
-func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
+// runLiveView returns the process exit code. It calls os.Exit nowhere itself:
+// the terminal is on the alternate screen with echo off from the moment the
+// defer below is registered, and an exit that skipped it would leave the user
+// at an invisible prompt.
+func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int) {
 	// Set up signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -127,9 +130,8 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 			srv := web.NewServer(webPort)
 			webErrCh, err := srv.Start(ctx)
 			if err != nil {
-				cancel()
 				fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
-				os.Exit(1)
+				return 1
 			}
 			go func() {
 				if err := <-webErrCh; err != nil {
@@ -143,9 +145,8 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 
 	// Set up keyboard input
 	if err := ui.SetupRawInput(); err != nil {
-		cancel()
 		fmt.Fprintf(os.Stderr, "Error setting up keyboard input: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Start keyboard reader
@@ -185,7 +186,8 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 			// After the restore above, so the message lands on the shell's
 			// screen instead of the one that is about to be discarded.
 			fmt.Fprintf(os.Stderr, "csm: %v\n", fatalErr)
-			os.Exit(1)
+			code = 1
+			return
 		}
 		fmt.Println("Goodbye!")
 	}()
@@ -243,12 +245,12 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 		select {
 		case <-sigCh:
 			cancel()
-			return
+			return 0
 		case <-ctx.Done():
-			return
+			return 0
 		case fatalErr = <-webFatal:
 			cancel()
-			return
+			return 0
 		case key := <-keyCh:
 			// Any keypress clears feedback from the previous jump, so a stale
 			// message never sits under a table it no longer describes.
@@ -273,6 +275,8 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 				if viewMode != ViewModeLive || selected < 0 || selected >= len(visible) {
 					break
 				}
+				// err is always non-nil on !darwin, where jump_other.go's Focus
+				// is a stub.
 				res, err := jump.Focus(visible[selected])
 				if err != nil {
 					jumpMsg = err.Error()
@@ -309,7 +313,7 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 				}
 			case 3: // Ctrl+C
 				cancel()
-				return
+				return 0
 			}
 		case <-ticker.C:
 			if viewMode == ViewModeUsage {
@@ -326,12 +330,13 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) {
 	}
 }
 
-// runWebOnly starts the web dashboard server without the terminal UI.
-// This is used by the macOS menu bar app and other headless integrations.
-func runWebOnly(webPort int) {
+// runWebOnly starts the web dashboard server without the terminal UI and
+// returns the process exit code. This is used by the macOS menu bar app and
+// other headless integrations.
+func runWebOnly(webPort int) (code int) {
 	if web.ProbeCSMServer(webPort) {
 		fmt.Printf("csm web dashboard is already running at http://localhost:%d\n", webPort)
-		os.Exit(0)
+		return 0
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -343,7 +348,7 @@ func runWebOnly(webPort int) {
 	webErrCh, err := srv.Start(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	fmt.Printf("Web dashboard running at http://%s\n", srv.Addr())
@@ -354,9 +359,10 @@ func runWebOnly(webPort int) {
 	case err := <-webErrCh:
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 	}
+	return 0
 }
 
 // handleKillGhosts finds and terminates ghost Claude processes
@@ -410,5 +416,7 @@ func openBrowser(url string) {
 	default:
 		return
 	}
-	cmd.Start()
+	// A failure has nowhere to go from here: this runs with the alternate
+	// screen up, where the next frame overwrites anything printed.
+	_ = cmd.Start()
 }

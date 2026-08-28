@@ -1,0 +1,47 @@
+version: "2"
+
+# livecheck_manual_test.go is `darwin && manual`, so neither the host pass nor
+# the darwin pass compiles it and nothing there is ever analysed. The tag is
+# carried by exactly one file, so switching it on costs nothing elsewhere.
+run:
+  build-tags:
+    - manual
+
+# High-signal only: every linter here reports a defect, not a style preference.
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - predeclared
+    - unconvert
+    - usetesting
+  settings:
+    gosec:
+      excludes:
+        # Reading a log path the user named and launching their terminal is
+        # what this tool does, so subprocess and file-inclusion audits fire on
+        # every core path and never on a defect.
+        - G204
+        - G304
+  exclusions:
+    rules:
+      # Tests write their fixtures into a t.TempDir() no other account can
+      # reach, so the permission floors have nothing to protect there. Only
+      # those three rules are lifted; the rest of gosec still reads test code.
+      - path: _test\.go
+        text: "^G30[126]:"
+        linters:
+          - gosec
+
+# Both default to a small number, which drops repeated findings without saying
+# so. A gate that hides part of what it found reports a clean run on a dirty
+# tree.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

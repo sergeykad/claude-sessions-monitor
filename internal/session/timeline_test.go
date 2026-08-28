@@ -273,11 +273,16 @@ func writeLines(t *testing.T, path string, lines []string) {
 	if err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	defer f.Close()
 	for _, line := range lines {
 		if _, err := f.WriteString(line + "\n"); err != nil {
+			_ = f.Close()
 			t.Fatalf("write line: %v", err)
 		}
+	}
+	// A discarded close error hides a truncated fixture, which then fails a
+	// test somewhere far from here.
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
 	}
 }
 

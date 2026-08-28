@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
-// Claude Code keeps a per-process registry at ~/.claude/sessions/<pid>.json
-// (observed from 2.1.x). Each file carries the process id, the session id and
-// the working directory, is written when the session starts and is removed
-// when it exits. That makes it two things this package otherwise has to guess
+// Claude Code keeps a per-process registry at ~/.claude/sessions/<pid>.json.
+// Each file carries the process id, the session id and the working directory,
+// is written when the session starts and is removed when it exits. Which
+// release added it is not known; entries have been seen going back months, so
+// treat a missing registry as an old or pinned install rather than as the
+// common case. That makes it two things this package otherwise has to guess
 // at: an exact pid <-> session mapping, and a per-session liveness signal.
 //
 // Without it, a directory holding several sessions is paired positionally

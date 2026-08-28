@@ -177,8 +177,12 @@ build-tagged file is a build error.
 
 - `session/listprocs_linux.go` / `listprocs_darwin.go` / `listprocs_other.go`:
   the process table and one pid's name and cwd. Linux reads `/proc`, macOS calls
-  `sysctl kern.proc.all`. The `_other.go` files state the intent for a third
-  platform; see the note below on why they cannot be compiled yet.
+  `sysctl kern.proc.all`. The cwd is where the two diverge most: Linux reads the
+  `/proc/<pid>/cwd` symlink, one syscall per process, while macOS spawns `lsof`
+  per process because the native call is cgo (see Subprocesses). That is why
+  darwin checks for `lsof` once per scan and Linux checks nothing, and why
+  `procRoot` is a Linux-only seam. The `_other.go` files state the intent for a
+  third platform; see the note below on why they cannot be compiled yet.
 - `session/origin_detect_darwin.go` / `origin_detect_linux.go`: read a
   process's environment and parent chain (`ps -E` vs `/proc`). There is no
   windows file and no catch-all, so `GOOS=windows go build` fails here.

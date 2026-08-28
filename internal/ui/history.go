@@ -11,7 +11,8 @@ import (
 
 // RenderHistory renders the session history view with date grouping
 // When showFooter is true, uses \r\n for raw terminal mode
-// errMsg, when non-empty, explains why the list below may be incomplete.
+// errMsg, when non-empty, explains why the list below may be incomplete, or
+// carries feedback from the last key the user pressed.
 // "No sessions found" is a claim about the past; it must not be printed when
 // the reason for the empty list is that the search itself failed.
 func RenderHistory(sessions []session.HistorySession, days int, showFooter bool, errMsg string) {

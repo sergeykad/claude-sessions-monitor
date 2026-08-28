@@ -51,11 +51,12 @@ func processComm(pid int) (string, error) {
 // kinfoToProcInfo copies the three fields this package reads out of a kinfo_proc.
 //
 // The parent pid comes from Eproc.Ppid, not from Proc.P_oppid. P_oppid is the
-// original parent, which the kernel fills in only while a debugger holds the
-// process, so reading it would report almost every process as an orphan.
+// parent saved while a debugger holds the process and is zero otherwise, so the
+// orphan test (ppid == 1) would never fire and no macOS session would ever be
+// badged a ghost.
 //
-// P_comm is a bare name capped at 16 bytes, where `ps -o comm=` printed the
-// full executable path. isClaudeComm matches on the suffix, so both forms hit.
+// P_comm is the accounting name: the executable's basename, capped at 16 bytes.
+// isClaudeComm matches on the suffix.
 func kinfoToProcInfo(p *unix.KinfoProc) procInfo {
 	return procInfo{
 		pid:  int(p.Proc.P_pid),
@@ -80,17 +81,19 @@ func commString(b []byte) string {
 func getProcessCwd(pid int) (string, error) {
 	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
+		// lsof exiting non-zero is about this one process: it refuses another
+		// user's, among others. Anything else means lsof did not run at all,
+		// so every lookup this scan makes will fail the same way.
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return "", fmt.Errorf("%w: %w", errCwdLookupBroken, err)
+		}
 		return "", err
 	}
 
-	for _, line := range bytes.Split(out, []byte("\n")) {
-		if !bytes.Contains(line, []byte(" cwd ")) {
-			continue
-		}
-		fields := bytes.Fields(line)
-		if len(fields) >= 9 {
-			return string(fields[len(fields)-1]), nil
-		}
+	cwd, err := parseLsofCwd(out)
+	if err != nil {
+		return "", fmt.Errorf("pid %d: %w", pid, err)
 	}
-	return "", fmt.Errorf("cwd not found in lsof output for pid %d", pid)
+	return cwd, nil
 }

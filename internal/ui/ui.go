@@ -126,8 +126,9 @@ func ActiveSessions(sessions []session.Session) []session.Session {
 // Uses \r\n for newlines to work correctly in raw terminal mode.
 // If webURL is non-empty, the web dashboard shortcut is shown in the footer.
 // selected is an index into ActiveSessions(sessions), or -1 for no selection.
-// jumpMsg is one line of feedback from the last jump attempt, or "" for none.
-func RenderLive(sessions []session.Session, webURL string, claudeStatus *session.ClaudeStatus, selected int, jumpMsg string) {
+// actionMsg is one line of feedback from the last key the user pressed, or ""
+// for none.
+func RenderLive(sessions []session.Session, webURL string, claudeStatus *session.ClaudeStatus, selected int, actionMsg string) {
 	// Set terminal title with status summary
 	SetTerminalTitle(buildTerminalTitle(sessions))
 
@@ -193,8 +194,8 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 
 	// Feedback from the last jump attempt, on its own line so it never shifts
 	// the table.
-	if jumpMsg != "" {
-		fmt.Fprintf(&buf, "%s%s%s%s", Dim, sanitizeForTerminal(jumpMsg), Reset, rawNewline)
+	if actionMsg != "" {
+		fmt.Fprintf(&buf, "%s%s%s%s", Dim, sanitizeForTerminal(actionMsg), Reset, rawNewline)
 	}
 
 	// Show help footer

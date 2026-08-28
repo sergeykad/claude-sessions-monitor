@@ -13,8 +13,11 @@ import (
 const usageBarWidth = 20
 
 // RenderUsage renders the token usage view in the terminal.
+//
+// actionMsg is one line of feedback from the last key the user pressed, or ""
+// for none. Without it a key that fails in this view says nothing at all.
 // Uses \r\n for newlines when in raw terminal mode (showFooter=true).
-func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFooter bool) {
+func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFooter bool, actionMsg string) {
 	nl := newlineFor(showFooter)
 
 	// Build the whole frame in memory and write it out in a single syscall —
@@ -45,7 +48,9 @@ func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFoot
 			fmt.Fprintf(&buf, "  %sExtra usage: enabled%s%s", Dim, Reset, nl)
 		}
 	} else {
-		errMsg := "OAuth token not found"
+		// No guessed default: "not found" was printed for every reason the
+		// quota could not be read, including reasons no sign-in would fix.
+		errMsg := "reason unknown"
 		if apiQuota != nil && apiQuota.Error != "" {
 			errMsg = apiQuota.Error
 		}
@@ -109,6 +114,10 @@ func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFoot
 	}
 
 	// Footer
+	if actionMsg != "" {
+		fmt.Fprintf(&buf, "%s%s%s%s", Dim, sanitizeForTerminal(actionMsg), Reset, nl)
+	}
+
 	if showFooter {
 		fmt.Fprintf(&buf, "%s%sr: refresh | l: live | h: history | Ctrl+C: quit%s%s", nl, Dim, Reset, nl)
 	}

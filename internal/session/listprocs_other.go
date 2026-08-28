@@ -23,5 +23,5 @@ func processComm(int) (string, error) {
 
 // getProcessCwd has no implementation on this platform. See listProcessesNative.
 func getProcessCwd(int) (string, error) {
-	return "", fmt.Errorf("reading a process working directory is not supported on %s", runtime.GOOS)
+	return "", fmt.Errorf("%w: not supported on %s", errCwdLookupBroken, runtime.GOOS)
 }

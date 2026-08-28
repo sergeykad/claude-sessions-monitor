@@ -90,7 +90,7 @@ A user entry that carries only `tool_result` blocks is *not* a prompt
 
 Claude Code (2.1.x) keeps a registry at `~/.claude/sessions/<pid>.json` with
 the pid, session id and cwd of every live session; `registry.go` reads it.
-Every entry is validated against the set of `claude` pids the scan found —
+Every entry is validated against the set of `claude` pids the scan found,
 never against the bare pid — because a crash or reboot leaves files behind
 and the pid gets reused. `pairProcess` then decides, per log: registry hit →
 that session's own pid, confident; registry present and every pid in the
@@ -175,17 +175,25 @@ default here: with a `runtime.GOOS` switch every branch must compile on every
 platform, so an unhandled OS is only found at runtime, while a missing
 build-tagged file is a build error.
 
-- `session/listprocs_linux.go` / `listprocs_darwin.go` / `listprocs_other.go` —
+- `session/listprocs_linux.go` / `listprocs_darwin.go` / `listprocs_other.go`:
   the process table and one pid's name and cwd. Linux reads `/proc`, macOS calls
-  `sysctl kern.proc.all`, and everything else returns an error saying so.
-- `session/origin_detect_darwin.go` / `origin_detect_linux.go` — read a
+  `sysctl kern.proc.all`. The `_other.go` files state the intent for a third
+  platform; see the note below on why they cannot be compiled yet.
+- `session/origin_detect_darwin.go` / `origin_detect_linux.go`: read a
   process's environment and parent chain (`ps -E` vs `/proc`). There is no
   windows file and no catch-all, so `GOOS=windows go build` fails here.
-- `jump/jump_darwin.go` / `jump_other.go` — focus a terminal tab, or report
+- `session/oauth_darwin.go` / `oauth_linux.go` / `oauth_other.go`: read the
+  Claude Code OAuth token from the macOS Keychain or
+  `~/.claude/.credentials.json`. Each reports why it failed, so a platform csm
+  cannot read is not reported as "no token found".
+- `browser_darwin.go` / `browser_linux.go` / `browser_other.go`: hand a URL to
+  the desktop's default browser (`open`, `xdg-open`).
+- `jump/jump_darwin.go` / `jump_other.go`: focus a terminal tab, or report
   that we can't.
 
-Runtime `runtime.GOOS` switches, not build tags: `GetOAuthToken`, `openBrowser`
-in `main.go`, and the port-conflict hint in `web/server.go`.
+Inside those files `runtime.GOOS` appears only to name the platform in an error
+message. The one use outside them is the port-conflict hint in `web/server.go`,
+which picks between two format strings and is not dispatch.
 
 There is no `origin_detect_*.go` for other systems, so `internal/session`
 does not build on Windows or BSD. That is known; don't fix it in passing.

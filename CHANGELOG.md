@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The scan for running Claude processes asks the kernel directly (`/proc` on Linux, `sysctl kern.proc.all` on macOS) instead of running `ps` and reading its table. Scraping text meant for people has already caused two bugs here, and the scan runs on every refresh. `--kill-ghosts` checks the pid the same way, so nothing on the process path shells out any more. On Linux csm now spawns no subprocess except `xdg-open`
+- `getProcessCwd` moved from a `runtime.GOOS` switch to build-tagged files, so an unsupported platform is a build error rather than a wrong branch taken at runtime
+
 ## [0.7.0] - 2026-08-28
 
 ### Added

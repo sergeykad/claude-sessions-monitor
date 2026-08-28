@@ -14,14 +14,14 @@ import (
 // at: an exact pid <-> session mapping, and a per-session liveness signal.
 //
 // Without it, a directory holding several sessions is paired positionally
-// (newest log <-> first ps result), which the Discover loop comments already
+// (newest log <-> first scanned pid), which the Discover loop comments already
 // describe as having no real correspondence.
 //
 // What the registry is *not* is evidence that a process is alive. A file is
 // only removed on a clean exit, so a crash, a SIGKILL or a reboot leaves one
 // behind, and the pid it names is eventually handed to some unrelated process.
 // Every entry here is therefore checked against the set of live `claude`
-// processes ps found before anything is inferred from it.
+// processes the scan found before anything is inferred from it.
 
 type registryEntry struct {
 	PID       int    `json:"pid"`
@@ -39,7 +39,7 @@ var sessionsDir = func() (string, error) {
 }
 
 // claudePIDSet collapses the per-directory pid lists from getRunningClaudeDirs
-// into the flat set of `claude` processes ps found this scan.
+// into the flat set of `claude` processes this scan found.
 func claudePIDSet(runningDirs map[string][]int) map[int]bool {
 	set := make(map[int]bool)
 	for _, pids := range runningDirs {
@@ -137,13 +137,13 @@ func registryLogsForDir(registry map[string]registryEntry, projectDir string) []
 //
 //   - Registry hit, for a session whose cwd is this directory: the session's
 //     own pid, confident.
-//   - Registry present and every ps-found pid for this directory is accounted
+//   - Registry present and every scanned pid for this directory is accounted
 //     for by the registry: this session has no process; not running.
 //   - Registry present but some pid in this directory is unknown to it: keep
 //     the old bias of treating the session as running, but carry no pid.
 //   - No registry: the original positional pairing, unchanged.
 //
-// Every entry in registry has already been checked against the ps-derived set
+// Every entry in registry has already been checked against the scanned set
 // of live claude processes by readSessionRegistry, so a hit is a real process.
 func pairProcess(sessionID, encodedName string, registry map[string]registryEntry, haveRegistry bool,
 	pids []int, i, logCount int) (isRunning bool, pid int, confident bool) {

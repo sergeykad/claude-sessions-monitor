@@ -10,14 +10,11 @@ package session
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -215,41 +212,27 @@ func ClaudeProjectsDir() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// listProcesses shells out to ps. It is a variable so a test can make the
-// process scan fail, which is the case that used to be indistinguishable from
-// "nothing is running".
-var listProcesses = func() ([]byte, error) {
-	// ps directly, with no shell pipeline, to avoid shell injection risks.
-	return exec.Command("ps", "ax", "-o", "pid=,ppid=,comm=").Output()
-}
-
-// psLine is one parsed row of `ps -o pid=,ppid=,comm=`.
-type psLine struct {
+// procInfo is one live process, holding the three fields the pairing and ghost
+// rules read.
+type procInfo struct {
 	pid, ppid int
 	comm      string
 }
 
-// parsePSOutput splits ps output into rows, skipping anything malformed.
-func parsePSOutput(output []byte) []psLine {
-	var rows []psLine
-	for _, line := range bytes.Split(output, []byte("\n")) {
-		fields := bytes.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		// Atoi rather than Sscanf: a malformed field is reported instead of
-		// leaving the variable at zero and relying on the check below.
-		pid, err := strconv.Atoi(string(fields[0]))
-		if err != nil || pid == 0 {
-			continue
-		}
-		ppid, err := strconv.Atoi(string(fields[1]))
-		if err != nil {
-			continue
-		}
-		rows = append(rows, psLine{pid: pid, ppid: ppid, comm: string(fields[len(fields)-1])})
-	}
-	return rows
+// listProcesses returns every process the caller can see, asking the kernel
+// rather than parsing the output of a ps binary. It is a variable so a test can
+// make the process scan fail, which is the case that used to be
+// indistinguishable from "nothing is running".
+//
+// See listprocs_linux.go and listprocs_darwin.go for the implementations.
+var listProcesses = listProcessesNative
+
+// isClaudeComm reports whether a process name belongs to Claude Code.
+//
+// The match is on the suffix, so it holds whether the OS records a bare name or
+// a full executable path.
+func isClaudeComm(comm string) bool {
+	return strings.HasSuffix(comm, "claude")
 }
 
 // getRunningClaudeDirs returns a map of encoded directory names to PIDs where
@@ -274,13 +257,13 @@ func getRunningClaudeDirs() (map[string][]int, map[int]bool, error) {
 	dirs := make(map[string][]int)
 	orphaned := make(map[int]bool)
 
-	output, err := listProcesses()
+	procs, err := listProcesses()
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing processes with ps: %w", err)
+		return nil, nil, fmt.Errorf("scanning processes: %w", err)
 	}
 
-	for _, row := range parsePSOutput(output) {
-		if !strings.HasSuffix(row.comm, "claude") {
+	for _, row := range procs {
+		if !isClaudeComm(row.comm) {
 			continue
 		}
 		if row.ppid == 1 {
@@ -298,36 +281,6 @@ func getRunningClaudeDirs() (map[string][]int, map[int]bool, error) {
 	}
 
 	return dirs, orphaned, nil
-}
-
-// getProcessCwd returns the current working directory of a process by PID.
-// On Linux it reads /proc/<pid>/cwd; on Darwin it uses lsof.
-// Note: on Linux, reading /proc/<pid>/cwd requires the caller to be the same
-// user as the target process (or root). If csm runs as a different user,
-// os.Readlink will return a permission error and the process will be skipped.
-func getProcessCwd(pid int) (string, error) {
-	if runtime.GOOS == "linux" {
-		return os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
-	}
-
-	// Darwin: use lsof to find cwd
-	pidStr := fmt.Sprintf("%d", pid)
-	lsofCmd := exec.Command("lsof", "-p", pidStr)
-	lsofOutput, err := lsofCmd.Output()
-	if err != nil {
-		return "", err
-	}
-
-	lines := bytes.Split(lsofOutput, []byte("\n"))
-	for _, l := range lines {
-		if bytes.Contains(l, []byte(" cwd ")) {
-			lFields := bytes.Fields(l)
-			if len(lFields) >= 9 {
-				return string(lFields[len(lFields)-1]), nil
-			}
-		}
-	}
-	return "", fmt.Errorf("cwd not found in lsof output for pid %d", pid)
 }
 
 // sessionIDFromLogFile returns the session UUID from a log file path.
@@ -378,7 +331,7 @@ func Discover() ([]Session, error) {
 	// Get directories where Claude is currently running, along with Claude
 	// Code's own pid <-> session registry when this version writes one. Both
 	// come from one TTL-cached snapshot so they cannot disagree about what is
-	// running, and so ps/lsof are not spawned on every refresh.
+	// running, and so the process table is not re-read on every refresh.
 	runningDirs, orphanedPIDs, registry, haveRegistry, err := cachedRunningClaudeDirs()
 	if err != nil {
 		return nil, err
@@ -428,7 +381,7 @@ func Discover() ([]Session, error) {
 			// findActiveLogs already decided every file here is a plausible
 			// candidate for one of this directory's runningCount processes, but
 			// pairing a *specific* pid to a *specific* file by array position
-			// (most-recent log <-> first ps result) has no real correspondence --
+			// (most-recent log <-> first scanned pid) has no real correspondence --
 			// neither list is ordered by anything that ties them together. When
 			// a directory holds more candidate logs than confidently-paired
 			// pids (i >= len(pids)), still treat the session as running rather
@@ -1307,7 +1260,7 @@ func FindGhostProcesses() ([]GhostProcess, error) {
 // ghostsFrom selects the ghost sessions whose pid is certainly their own.
 //
 // Staleness is a property of the log, but the pid is paired to that log by
-// position: logs arrive sorted newest-first while pids arrive in ps order, and
+// position: logs arrive sorted newest-first while pids arrive in scan order, and
 // the two orderings have no relationship. In a directory running one Claude the
 // pairing is the only one available and therefore correct; with several, the
 // stale log can carry the busy process's pid. Since the caller sends SIGTERM to
@@ -1343,12 +1296,11 @@ func ghostsFrom(sessions []Session) []GhostProcess {
 // isClaudeProcess checks whether the given PID belongs to a process named "claude".
 // This guards against PID reuse where a stale PID now belongs to an unrelated process.
 func isClaudeProcess(pid int) bool {
-	out, err := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=").Output()
+	comm, err := processComm(pid)
 	if err != nil {
 		return false
 	}
-	comm := strings.TrimSpace(string(out))
-	return strings.HasSuffix(comm, "claude")
+	return isClaudeComm(comm)
 }
 
 // KillGhostProcesses sends SIGTERM to every ghost process.

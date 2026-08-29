@@ -175,25 +175,19 @@ default here: with a `runtime.GOOS` switch every branch must compile on every
 platform, so an unhandled OS is only found at runtime, while a missing
 build-tagged file is a build error.
 
-- `session/listprocs_linux.go` / `listprocs_darwin.go` / `listprocs_other.go`:
-  the process table and one pid's name and cwd. Linux reads `/proc`, macOS calls
-  `sysctl kern.proc.all`. The cwd is where the two diverge most: Linux reads the
-  `/proc/<pid>/cwd` symlink, one syscall per process, while macOS spawns `lsof`
-  per process because the native call is cgo (see Subprocesses). That is why
-  darwin checks for `lsof` once per scan and Linux checks nothing, and why
-  `procRoot` is a Linux-only seam. The `_other.go` files state the intent for a
-  third platform; see the note below on why they cannot be compiled yet.
+- `session/listprocs_linux.go` / `listprocs_darwin.go`: the process table and
+  one pid's name and cwd. Linux reads `/proc`; macOS calls `sysctl kern.proc.all`
+  and spawns `lsof` for the cwd. The `getProcessCwd` comment there says why.
 - `session/origin_detect_darwin.go` / `origin_detect_linux.go`: read a
   process's environment and parent chain (`ps -E` vs `/proc`). There is no
   windows file and no catch-all, so `GOOS=windows go build` fails here.
-- `session/oauth_darwin.go` / `oauth_linux.go` / `oauth_other.go`: read the
-  Claude Code OAuth token from the macOS Keychain or
-  `~/.claude/.credentials.json`. Each reports why it failed, so a platform csm
-  cannot read is not reported as "no token found".
-- `browser_unix.go` (`linux || darwin`) holds `openBrowser`; `browser_darwin.go`
-  and `browser_linux.go` each supply only the `browserOpener` constant (`open`,
-  `xdg-open`); `browser_other.go` reports that there is none. Splitting a shared
-  body from a per-OS constant beats copying the body once per OS.
+- `session/oauth_darwin.go` / `oauth_linux.go`: read the Claude Code OAuth
+  token from the macOS Keychain or `~/.claude/.credentials.json`. Each reports
+  why it failed, so a platform csm cannot read is not reported as "no token
+  found".
+- `browser.go` holds `openBrowser`; `browser_darwin.go` and `browser_linux.go`
+  each supply only the `browserOpener` constant (`open`, `xdg-open`). Splitting
+  a shared body from a per-OS constant beats copying the body once per OS.
 - `jump/jump_darwin.go` / `jump_other.go`: focus a terminal tab, or report
   that we can't.
 

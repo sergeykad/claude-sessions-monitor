@@ -9,15 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- The scan for running Claude processes asks the kernel directly (`/proc` on Linux, `sysctl kern.proc.all` on macOS) instead of running `ps` and reading its table. `ps` prints a text table meant for people, whose columns are not stable across platforms, and the scan runs on every refresh. `--kill-ghosts` checks the pid the same way. On Linux csm now spawns no subprocess except `xdg-open`; on macOS `lsof` is still used to read a process's working directory
-- `getProcessCwd`, `GetOAuthToken` and `openBrowser` moved from `runtime.GOOS` switches to build-tagged files, so an unsupported platform is a build error rather than a wrong branch taken at runtime
+- The scan for running Claude processes reads the kernel's process table directly (`/proc` on Linux, `sysctl kern.proc.all` on macOS) instead of parsing `ps` output. On Linux csm no longer spawns any subprocess except `xdg-open`
+- Platform-specific code (`getProcessCwd`, `GetOAuthToken`, `openBrowser`) moved from `runtime.GOOS` switches to build-tagged files, so an unsupported platform is a build error rather than a silent no-op
 
 ### Fixed
 
-- A Claude session whose working directory holds a space was dropped from the dashboard on macOS. The `lsof` output was read by taking the last space-separated field, so `/Users/x/My Project` came back as `Project` and the session was keyed under a project that does not exist
-- csm reported no running sessions, with no error, when it found Claude processes but could not read the working directory of a single one of them. That is the state on macOS when `lsof` is not on `PATH`
-- The usage view said "OAuth token not found" whenever it could not read the Claude Code credentials, including when the file was unreadable for some other reason or when the platform has no credential store at all. It now says what actually went wrong, reports never having signed in as the ordinary state it is rather than as an errno, and passes on the Keychain's own wording on macOS instead of `exit status 44`. Credentials that hold an empty access token are rejected instead of being sent to the API as an empty `Bearer` header
-- Pressing `w` to open the dashboard did nothing and said nothing when the browser could not be launched, which is what happens on a Linux install without `xdg-utils`. The reason now appears in whichever view is on screen, and a successful launch is confirmed, because `openBrowser` returns as soon as the child starts and a browser that then gives up used to look identical to a key that was never registered
+- On macOS, a session whose working directory contains a space was dropped from the dashboard: the path was read as the last space-separated field of `lsof` output
+- A scan that found Claude processes but could not resolve any of their working directories (macOS without `lsof` on `PATH`) reported "no running sessions" with no error. It now reports the failure
+- The usage view said "OAuth token not found" for every credential failure. It now reports the actual reason, and rejects credentials with an empty access token instead of sending an empty `Bearer` header
+- Pressing `w` said nothing when the browser could not be launched (e.g. Linux without `xdg-utils`). The live view now confirms the launch or shows the error
 
 ## [0.7.0] - 2026-08-28
 

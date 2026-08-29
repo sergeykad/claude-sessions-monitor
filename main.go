@@ -208,16 +208,16 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 		case ViewModeHistory:
 			ui.MoveCursorHome()
 			sessions, err := session.DiscoverHistory(historyDays)
-			msg := actionMsg
+			errMsg := ""
 			if err != nil {
-				msg = err.Error()
+				errMsg = err.Error()
 			}
-			ui.RenderHistory(sessions, historyDays, true, msg)
+			ui.RenderHistory(sessions, historyDays, true, errMsg)
 		case ViewModeUsage:
 			ui.MoveCursorHome()
 			usage := session.ComputeUsage()
 			apiQuota := session.FetchAPIQuota()
-			ui.RenderUsage(usage, apiQuota, true, actionMsg)
+			ui.RenderUsage(usage, apiQuota, true)
 		default:
 			sessions, err := session.Discover()
 			// An empty dashboard and a failed scan look identical once the

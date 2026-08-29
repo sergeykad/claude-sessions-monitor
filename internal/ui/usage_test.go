@@ -25,7 +25,7 @@ func TestRenderUsageSurvivesOutOfRangeUtilization(t *testing.T) {
 				Available: true,
 				FiveHour:  &session.QuotaBucket{Utilization: u},
 			}
-			RenderUsage(&session.UsageStats{}, quota, false, "")
+			RenderUsage(&session.UsageStats{}, quota, false)
 		})
 	}
 }
@@ -37,8 +37,8 @@ func TestRenderUsageDistinguishesFailureFromNoUsage(t *testing.T) {
 			t.Fatalf("panicked: %v", r)
 		}
 	}()
-	RenderUsage(&session.UsageStats{Err: "permission denied"}, nil, false, "")
-	RenderUsage(&session.UsageStats{PartialLogs: 1}, nil, false, "")
-	RenderUsage(&session.UsageStats{}, nil, false, "")
-	RenderUsage(nil, nil, false, "")
+	RenderUsage(&session.UsageStats{Err: "permission denied"}, nil, false)
+	RenderUsage(&session.UsageStats{PartialLogs: 1}, nil, false)
+	RenderUsage(&session.UsageStats{}, nil, false)
+	RenderUsage(nil, nil, false)
 }

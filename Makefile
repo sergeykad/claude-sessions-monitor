@@ -1,4 +1,4 @@
-.PHONY: build build-all install packages checksums clean fmt lint shellcheck check
+.PHONY: build build-all install packages checksums clean fmt lint shellcheck deadcode check
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -32,12 +32,47 @@ lint:
 	GOOS=linux GOARCH=amd64 $(GOLANGCI_LINT) run ./...
 	GOOS=darwin GOARCH=arm64 $(GOLANGCI_LINT) run ./...
 
+# Pinned so a new x/tools release cannot change what the gate reports. CI runs
+# this target rather than installing its own copy, so this is the only pin.
+DEADCODE_VERSION := v0.49.0
+DEADCODE := $(or $(shell go env GOBIN),$(shell go env GOPATH)/bin)/deadcode
+
+# golangci-lint's unused reads only the files one pass compiles, and never
+# reports an exported name, because any importer could call it. An exported
+# function with no caller anywhere is therefore invisible to it. deadcode walks
+# the call graph from main instead, so it sees one.
+#
+# Each run sees one build, so a function the other platform's file calls looks
+# unreachable here: internal/jump's pick sits in an untagged file and only
+# jump_darwin.go calls it, so the linux pass reports it. -test counts a function
+# a test reaches as live, and pick_test.go is what clears it. It cuts the other
+# way too: a helper whose last production caller is deleted stays live as long
+# as its test calls it.
+#
+# That is coverage doing the work, not a rule. A cross-platform helper with no
+# test is still reported, wrongly. Add the test rather than delete the function.
+# Judging it properly means reporting a function only when every build that
+# compiles its file calls it dead, which needs the file sets from go list and a
+# script to match them against deadcode -json.
+#
+# deadcode exits 0 whether or not it found anything, so the output is the
+# result and the gate has to be built from it. A run that fails prints to
+# stderr and nothing to stdout, which would read as "no dead code", so a
+# non-zero exit is turned into output rather than left to the exit code.
+deadcode:
+	@go version -m $(DEADCODE) 2>/dev/null | grep -q 'golang.org/x/tools.*$(DEADCODE_VERSION)' || \
+		go install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
+	@found=$$({ GOOS=linux GOARCH=amd64 $(DEADCODE) -test ./... || echo "deadcode failed for GOOS=linux (see above)"; \
+	            GOOS=darwin GOARCH=arm64 $(DEADCODE) -test ./... || echo "deadcode failed for GOOS=darwin (see above)"; } | sort -u); \
+		[ -z "$$found" ] || { echo "$$found"; echo "Unreachable: delete it, or call it."; exit 1; }
+
 # Everything CI enforces, runnable locally before pushing
 check:
 	@gofmt -l . | grep . && { echo "Not gofmt-clean — run 'make fmt'"; exit 1; } || true
 	go vet ./...
 	$(MAKE) lint
 	$(MAKE) shellcheck
+	$(MAKE) deadcode
 	go build $(LDFLAGS) -o /dev/null .
 	go test ./...
 

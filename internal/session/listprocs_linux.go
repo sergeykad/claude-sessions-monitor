@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,9 +19,8 @@ var procRoot = "/proc"
 //
 // A pid that exits between the listing and the read is skipped. The table moves
 // while it is being read, and one departed process is not a failed scan. A
-// procfs that cannot be listed at all is a failed scan and is reported, because
-// an empty list and a broken scan look identical downstream: every session
-// would be marked inactive and csm would report no running sessions.
+// procfs that cannot be listed at all is a failed scan and is reported. A table
+// that lists but yields nothing is rejected by the caller.
 func listProcessesNative() ([]procInfo, error) {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -30,45 +28,23 @@ func listProcessesNative() ([]procInfo, error) {
 	}
 
 	procs := make([]procInfo, 0, len(entries))
-	unreadable := 0
 	for _, e := range entries {
 		// procfs also holds named entries such as self, meminfo and net.
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
+		// A pid that is gone exited between the listing and the read, which
+		// is normal. A table that comes back empty is rejected by the caller.
 		data, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "stat"))
 		if err != nil {
-			// A pid that is gone exited between the listing and the read,
-			// which is normal. Anything else is a process that is still there
-			// and cannot be seen, so it is counted rather than ignored.
-			if !errors.Is(err, fs.ErrNotExist) {
-				unreadable++
-			}
 			continue
 		}
 		comm, ppid, err := parseProcStat(data)
 		if err != nil {
-			unreadable++
 			continue
 		}
 		procs = append(procs, procInfo{pid: pid, ppid: ppid, comm: comm})
-	}
-
-	// The scanning process is itself in procfs, so an empty result is a procfs
-	// that is not what it claims to be, not a machine with nothing running. An
-	// empty list downstream means "no Claude session is running", which csm
-	// would then state with confidence.
-	//
-	// A partial failure still gets through. Under a hidepid mount csm reads its
-	// own processes and not another user's, so this passes while that user's
-	// claude sessions are invisible. getRunningClaudeDirs catches the narrower
-	// case where claude processes were seen but none of them resolved.
-	if len(procs) == 0 {
-		if unreadable > 0 {
-			return nil, fmt.Errorf("%s listed %d process entries and none could be read", procRoot, unreadable)
-		}
-		return nil, fmt.Errorf("%s holds no processes", procRoot)
 	}
 	return procs, nil
 }

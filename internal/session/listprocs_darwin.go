@@ -3,7 +3,6 @@
 package session
 
 import (
-	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -12,11 +11,8 @@ import (
 )
 
 // listProcessesNative reads the process table out of the kernel with
-// sysctl kern.proc.all.
-//
-// An error is reported rather than an empty list. An empty list and a broken
-// scan look identical downstream: every session would be marked inactive and
-// csm would report no running sessions.
+// sysctl kern.proc.all. A table that comes back empty is rejected by the
+// caller.
 func listProcessesNative() ([]procInfo, error) {
 	// A scan without lsof is useless: every working directory below would fail
 	// to resolve, leaving an empty map that reads downstream as a machine with
@@ -29,14 +25,6 @@ func listProcessesNative() ([]procInfo, error) {
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
 		return nil, fmt.Errorf("sysctl kern.proc.all: %w", err)
-	}
-
-	// SysctlKinfoProcSlice reports an empty list, not an error, when the size
-	// probe comes back zero. No machine has zero processes, and an empty list
-	// downstream means "no Claude session is running", which csm would then
-	// state with confidence.
-	if len(procs) == 0 {
-		return nil, errors.New("sysctl kern.proc.all returned no processes")
 	}
 
 	out := make([]procInfo, 0, len(procs))

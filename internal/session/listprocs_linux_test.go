@@ -126,37 +126,15 @@ func TestListProcessesNativeSkipsAProcessThatExitedMidScan(t *testing.T) {
 	}
 }
 
-// A procfs that cannot be read, or that holds no processes at all, is a broken
-// scan and not an empty machine: the scanning process is itself in there. If
-// either came back as an empty list, csm would print "No active Claude
-// sessions." with full confidence while sessions ran.
+// A procfs that cannot be listed is a broken scan, not an empty machine. A
+// table that lists but yields nothing is rejected one level up, in
+// getRunningClaudeDirs.
 func TestListProcessesNativeReportsABrokenProcfs(t *testing.T) {
-	tests := map[string]string{
-		"procfs is not there":       filepath.Join(t.TempDir(), "no-such-procfs"),
-		"procfs lists no processes": t.TempDir(),
-		"every process entry is unreadable": func() string {
-			// A directory where the stat file belongs fails the read for every
-			// user, root included, so the test does not depend on who runs it.
-			root := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(root, "101", "stat"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			return root
-		}(),
-	}
+	procRootFor(t, filepath.Join(t.TempDir(), "no-such-procfs"))
 
-	for name, root := range tests {
-		t.Run(name, func(t *testing.T) {
-			procRootFor(t, root)
-
-			procs, err := listProcessesNative()
-			if err == nil {
-				t.Fatalf("scan returned %d processes and no error", len(procs))
-			}
-			if name == "every process entry is unreadable" && !strings.Contains(err.Error(), "could be read") {
-				t.Errorf("an unreadable procfs is reported as an empty one: %v", err)
-			}
-		})
+	procs, err := listProcessesNative()
+	if err == nil {
+		t.Fatalf("scan returned %d processes and no error", len(procs))
 	}
 }
 

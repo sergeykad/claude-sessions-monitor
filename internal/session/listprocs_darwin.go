@@ -78,7 +78,7 @@ func kinfoToProcInfo(p *unix.KinfoProc) procInfo {
 // needs cgo, and the release workflow cross-builds the darwin targets from a
 // Linux runner in one job. So this asks lsof.
 func getProcessCwd(pid int) (string, error) {
-	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "cwd", "-Fn").Output()
 	if err != nil {
 		return "", err
 	}

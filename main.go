@@ -5,9 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -170,7 +168,7 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 	// Row selection for jumping. -1 means nothing is selected; the live view
 	// starts that way so the first arrow press lands on the top row.
 	selected := -1
-	jumpMsg := ""
+	actionMsg := ""
 	// Sessions as of the last render, so a keypress acts on exactly the rows
 	// the user can see rather than re-discovering and racing the ticker.
 	var visible []session.Session
@@ -225,7 +223,7 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 			// An empty dashboard and a failed scan look identical once the
 			// error is dropped, so the reason goes into the frame rather than
 			// leaving csm to report "No active Claude sessions." either way.
-			msg := jumpMsg
+			msg := actionMsg
 			if err != nil {
 				msg = "Cannot read sessions: " + err.Error()
 			}
@@ -261,9 +259,9 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 			cancel()
 			return 0
 		case key := <-keyCh:
-			// Any keypress clears feedback from the previous jump, so a stale
+			// Any keypress clears the previous action's feedback, so a stale
 			// message never sits under a table it no longer describes.
-			jumpMsg = ""
+			actionMsg = ""
 			switch key {
 			case ui.KeyUp, ui.KeyDown:
 				if viewMode != ViewModeLive || len(visible) == 0 {
@@ -288,9 +286,9 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 				// is a stub.
 				res, err := jump.Focus(visible[selected])
 				if err != nil {
-					jumpMsg = err.Error()
+					actionMsg = err.Error()
 				} else {
-					jumpMsg = res.Message()
+					actionMsg = res.Message()
 				}
 				render()
 			case 'h', 'H':
@@ -318,7 +316,16 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 				}
 			case 'w', 'W':
 				if webBrowseURL != "" {
-					openBrowser(webBrowseURL)
+					// Confirming the launch matters as much as reporting the
+					// failure: openBrowser returns once the child is running,
+					// so a browser that starts and then gives up looks exactly
+					// like a key that was never registered.
+					if err := openBrowser(webBrowseURL); err != nil {
+						actionMsg = "Cannot open a browser: " + err.Error()
+					} else {
+						actionMsg = "Opening " + webBrowseURL
+					}
+					render()
 				}
 			case 3: // Ctrl+C
 				cancel()
@@ -412,20 +419,4 @@ func handleKillGhosts() {
 	if len(failed) > 0 {
 		os.Exit(1)
 	}
-}
-
-// openBrowser opens the given URL in the default browser
-func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	default:
-		return
-	}
-	// A failure has nowhere to go from here: this runs with the alternate
-	// screen up, where the next frame overwrites anything printed.
-	_ = cmd.Start()
 }

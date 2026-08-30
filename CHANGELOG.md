@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The scan for running Claude processes reads the kernel's process table directly (`/proc` on Linux, `sysctl kern.proc.all` on macOS) instead of parsing `ps` output. On Linux csm no longer spawns any subprocess except `xdg-open`
+- Platform-specific code (`getProcessCwd`, `GetOAuthToken`, `openBrowser`) moved from `runtime.GOOS` switches to build-tagged files, so an unsupported platform is a build error rather than a silent no-op
+
+### Fixed
+
+- On macOS, a session whose working directory contains a space was dropped from the dashboard: the path was read as the last space-separated field of `lsof` output
+- A scan that found Claude processes but could not resolve any of their working directories (macOS without `lsof` on `PATH`) reported "no running sessions" with no error. It now reports the failure
+- The usage view said "OAuth token not found" for every credential failure. It now reports the actual reason, and rejects credentials with an empty access token instead of sending an empty `Bearer` header
+- Pressing `w` said nothing when the browser could not be launched (e.g. Linux without `xdg-utils`). The live view now confirms the launch or shows the error
+
 ## [0.7.0] - 2026-08-28
 
 ### Added

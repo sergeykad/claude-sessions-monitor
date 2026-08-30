@@ -8,7 +8,7 @@ decision, and that comment is the authority if the two ever disagree.
 ## Data flow
 
 ```
-~/.claude/projects/<encoded-cwd>/<session>.jsonl     ps ax -o pid=,ppid=,comm=
+~/.claude/projects/<encoded-cwd>/<session>.jsonl      the OS process table
                     │                                          │
                     └──────────── session.Discover() ──────────┘
                                         │
@@ -36,9 +36,9 @@ auto-refreshes and the history view is throttled to once per 30s.
 1. `ClaudeProjectsDir()` is `$HOME/.claude/projects`. Every subdirectory is a
    project; its name is Claude Code's encoding of the working directory
    (`encodeProjectPath`: every rune outside `[A-Za-z0-9-]` becomes `-`).
-2. `getRunningClaudeDirs()` runs `ps ax -o pid=,ppid=,comm=` (no shell), keeps
-   rows whose command ends in `claude`, resolves each pid's cwd
-   (`/proc/<pid>/cwd` on Linux, `lsof -p` on macOS) and keys the result by
+2. `getRunningClaudeDirs()` reads the process table from the kernel
+   (`listProcesses`, see [Platform code](#platform-code)), keeps processes whose
+   name ends in `claude`, resolves each pid's cwd and keys the result by
    `encodeProjectPath(cwd)`. Because both sides use the same encoding, joining
    processes to project directories is a plain string-key match.
 3. `findActiveLogs(dir, runningCount)` picks which `*.jsonl` files to parse.
@@ -55,7 +55,7 @@ The encoded directory name is only a fallback for the project name. The real
 working directory is the `cwd` field inside the log, and `extractProjectName`
 (`history.go`) turns it into the short `org/repo` label.
 
-A failed `ps` scan aborts `Discover` with an error rather than returning an
+A failed process scan aborts `Discover` with an error rather than returning an
 empty process map: an empty map is indistinguishable from "nothing running"
 and would mark every session Inactive.
 
@@ -90,17 +90,17 @@ A user entry that carries only `tool_result` blocks is *not* a prompt
 
 Claude Code (2.1.x) keeps a registry at `~/.claude/sessions/<pid>.json` with
 the pid, session id and cwd of every live session; `registry.go` reads it.
-Every entry is validated against the set of `claude` pids `ps` found —
+Every entry is validated against the set of `claude` pids the scan found,
 never against the bare pid — because a crash or reboot leaves files behind
 and the pid gets reused. `pairProcess` then decides, per log: registry hit →
 that session's own pid, confident; registry present and every pid in the
 directory accounted for → not running; a pid the registry cannot name →
 running, no pid. Two files carrying one session id (`--resume` in two tabs)
 drop the id rather than guess. The registry snapshot is taken under the same
-lock and TTL as the `ps` scan so the two views cannot disagree mid-tick.
+lock and TTL as the process scan so the two views cannot disagree mid-tick.
 
 Without a registry (older Claude Code) the pairing is positional: logs are
-sorted newest-first, pids arrive in `ps` order, the two are unrelated, and
+sorted newest-first, pids arrive in scan order, the two are unrelated, and
 pairing log *i* with pid *i* is a guess. Everything downstream is built to
 survive that:
 
@@ -136,7 +136,7 @@ measurements: `[?]` in `ui/ui.go` and `ui/history.go`, the `?` badge in
 | Cache | Key / TTL | Why |
 |---|---|---|
 | `parseCache` | log path; valid while `(mtime, size)` unchanged | skip re-parsing multi-MB logs every tick |
-| `processScanCache` | 2s | one `ps`/`lsof` round per tick, not per caller |
+| `processScanCache` | 2s | one read of the process table per tick, not per caller |
 | `resultCache` | 1s | TUI loop, SSE hub and HTTP handlers collapse to one scan |
 | `apiQuotaCache` | 60s | the quota endpoint rate-limits hard |
 | `claudeStatusCache` | 60s | status page, fetched on demand only |
@@ -161,20 +161,38 @@ Network (`http.Client` with 5s timeout, both):
   greppable rather than imitating another client. Keep it that way.
 - `https://status.claude.com/api/v2/status.json` — service health.
 
-Subprocesses: `ps` (all platforms), `lsof` and `security` (macOS),
-`osascript` (macOS, jump only).
+Subprocesses, all macOS-only: `lsof` (a process's cwd), `ps` (origin
+detection, and the tty lookup in jump), `security` (Keychain) and `osascript`
+(jump). The native calls for the first and last are libproc and
+Security.framework, both cgo, and the release workflow cross-builds the darwin
+targets from a Linux runner in one job. On Linux csm spawns nothing except
+`xdg-open`.
 
 ### Platform code
 
-Build-tagged pairs, one file per OS with identical function signatures:
+Build tags, one file per OS with identical function signatures. That is the
+default here: with a `runtime.GOOS` switch every branch must compile on every
+platform, so an unhandled OS is only found at runtime, while a missing
+build-tagged file is a build error.
 
-- `session/origin_detect_darwin.go` / `origin_detect_linux.go` — read a
-  process's environment and parent chain (`ps -E` vs `/proc`).
-- `jump/jump_darwin.go` / `jump_other.go` — focus a terminal tab, or report
+- `session/listprocs_linux.go` / `listprocs_darwin.go`: the process table and
+  one pid's name and cwd. Linux reads `/proc`; macOS calls `sysctl kern.proc.all`
+  and spawns `lsof` for the cwd. The `getProcessCwd` comment there says why.
+- `session/origin_detect_darwin.go` / `origin_detect_linux.go`: read a
+  process's environment and parent chain (`ps -E` vs `/proc`). There is no
+  windows file and no catch-all, so `GOOS=windows go build` fails here.
+- `session/oauth_darwin.go` / `oauth_linux.go`: read the Claude Code OAuth
+  token from the macOS Keychain or `~/.claude/.credentials.json`. Each reports
+  why it failed, so a platform csm cannot read is not reported as "no token
+  found".
+- `browser.go` holds `openBrowser`; `browser_darwin.go` and `browser_linux.go`
+  each supply only the `browserOpener` constant (`open`, `xdg-open`). Splitting
+  a shared body from a per-OS constant beats copying the body once per OS.
+- `jump/jump_darwin.go` / `jump_other.go`: focus a terminal tab, or report
   that we can't.
 
-Runtime `runtime.GOOS` switches, not build tags: `getProcessCwd`,
-`GetOAuthToken`, `openBrowser` in `main.go`.
+`runtime.GOOS` appears once in the codebase: the port-conflict hint in
+`web/server.go`, which picks between two format strings and is not dispatch.
 
 There is no `origin_detect_*.go` for other systems, so `internal/session`
 does not build on Windows or BSD. That is known; don't fix it in passing.
@@ -334,8 +352,9 @@ Fixture helpers already exist; use them rather than hand-rolling JSONL:
 | `userLine` | `session/history_test.go` | a single user entry |
 | `timelineFixture` | `web/handlers_test.go` | a log under a fake `$HOME` for the handlers |
 
-Seams for the things you can't drive from a test: `listProcesses` (the `ps`
-scan), `originStoreDirFn`, `parseLogFileWithLimit` (trigger the oversized-line
+Seams for the things you can't drive from a test: `listProcesses` (the process
+scan), `getProcessCwdFn`, `procRoot` (procfs, Linux only), `browserCommand`,
+`originStoreDirFn`, `parseLogFileWithLimit` (trigger the oversized-line
 path without writing 10 MB), `web.discoverSessions`. Swap them and restore in
 `t.Cleanup`.
 

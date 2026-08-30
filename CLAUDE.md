@@ -9,6 +9,9 @@ Claude Sessions Monitor (csm) is a CLI tool that monitors Claude Code sessions a
 - Go 1.25+
 - Standard library, plus `golang.org/x/term` for raw terminal input. No other third-party dependencies.
 
+Tests sandbox `$HOME`. To run them against a clean one, keep the caches where they are:
+`HOME=<tmpdir> GOMODCACHE=$(go env GOMODCACHE) GOCACHE=$(go env GOCACHE) go test ./... -count=1`
+
 ## Project Structure
 
 ```
@@ -21,6 +24,8 @@ internal/
 main.go     - CLI entry point and flag handling
 docs/ARCHITECTURE.md - Contributor map: data flow, status rules, ghosts, caches, test helpers
 ```
+
+Read `docs/ARCHITECTURE.md` before changing `internal/session`, and `.github/CONTRIBUTING.md` for the style, test and changelog rules.
 
 ## Development Workflow
 
@@ -45,6 +50,7 @@ The `main` branch is protected:
    git add .
    git commit -m "Description of changes"
    ```
+   Run `make check` first: gofmt, `go vet`, golangci-lint once per `GOOS`, build and tests. That is exactly what CI runs.
 
 3. Push and create a pull request:
    ```bash

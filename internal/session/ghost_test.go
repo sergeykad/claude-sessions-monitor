@@ -11,7 +11,7 @@ import (
 
 // A directory with several Claude processes pairs pids to logs positionally,
 // and the two orderings are unrelated: logs are sorted newest-first while pids
-// arrive in ps order. Reporting a ghost from an unconfident pairing means
+// arrive in scan order. Reporting a ghost from an unconfident pairing means
 // --kill-ghosts sends SIGTERM to whichever process happens to sit at that
 // index, which can be the actively working one.
 func TestGhostsFromSkipsUnconfidentPairings(t *testing.T) {
@@ -110,30 +110,6 @@ func TestApplyParsedLogDerivesIsGhost(t *testing.T) {
 	}
 }
 
-// The orphan signal is the ppid column; a parse that drops or shifts it turns
-// every session into a ghost or none into one.
-func TestParsePSOutputReadsPPID(t *testing.T) {
-	out := []byte(`  101     1 /opt/homebrew/bin/claude
-  202  4321 claude
-  303     1 /bin/zsh
-garbage line
-`)
-	rows := parsePSOutput(out)
-	want := []psLine{
-		{pid: 101, ppid: 1, comm: "/opt/homebrew/bin/claude"},
-		{pid: 202, ppid: 4321, comm: "claude"},
-		{pid: 303, ppid: 1, comm: "/bin/zsh"},
-	}
-	if len(rows) != len(want) {
-		t.Fatalf("got %d rows, want %d: %+v", len(rows), len(want), rows)
-	}
-	for i := range want {
-		if rows[i] != want[i] {
-			t.Errorf("row %d = %+v, want %+v", i, rows[i], want[i])
-		}
-	}
-}
-
 // An empty process list and a failed process scan used to be the same value.
 // Every session was then marked Inactive and filtered out, so csm printed
 // "No active Claude sessions." with total confidence while sessions ran.
@@ -152,8 +128,8 @@ func TestDiscoverReportsProcessScanFailure(t *testing.T) {
 		listProcesses = original
 		clearScanCaches()
 	})
-	listProcesses = func() ([]byte, error) {
-		return nil, errors.New("ps: operation not permitted")
+	listProcesses = func() ([]procInfo, error) {
+		return nil, errors.New("operation not permitted")
 	}
 	// Both caches would otherwise serve a result from before the swap.
 	clearScanCaches()

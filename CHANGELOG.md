@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `install.sh`, a one-line installer (`curl -fsSL .../install.sh | sh`) that detects OS/arch, verifies the download, and installs to `~/.local/bin` without sudo
+- `csm -upgrade` replaces a directly-installed csm in place; installs owned by Homebrew, mise, dpkg, rpm, pacman or `go install` get that tool's upgrade command instead
+- The live dashboard checks for a newer release once a day in the background; set `CSM_NO_UPDATE_CHECK` to disable
+- An AUR package, `csm-bin`, published automatically on release
+- Releases now ship a `checksums.txt` asset, which `install.sh`, `csm -upgrade` and the Homebrew formula all verify against
+
 ### Changed
 
 - The scan for running Claude processes reads the kernel's process table directly (`/proc` on Linux, `sysctl kern.proc.all` on macOS) instead of parsing `ps` output. On Linux csm no longer spawns any subprocess except `xdg-open`
@@ -18,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A scan that found Claude processes but could not resolve any of their working directories (macOS without `lsof` on `PATH`) reported "no running sessions" with no error. It now reports the failure
 - The usage view said "OAuth token not found" for every credential failure. It now reports the actual reason, and rejects credentials with an empty access token instead of sending an empty `Bearer` header
 - Pressing `w` said nothing when the browser could not be launched (e.g. Linux without `xdg-utils`). The live view now confirms the launch or shows the error
+- The amd64 release binary no longer requires a glibc as new as the CI runner's; release builds are now statically linked (`CGO_ENABLED=0`)
 
 ## [0.7.0] - 2026-08-28
 

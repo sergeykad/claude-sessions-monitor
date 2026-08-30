@@ -191,9 +191,8 @@ build-tagged file is a build error.
 - `jump/jump_darwin.go` / `jump_other.go`: focus a terminal tab, or report
   that we can't.
 
-Inside those files `runtime.GOOS` appears only to name the platform in an error
-message. The one use outside them is the port-conflict hint in `web/server.go`,
-which picks between two format strings and is not dispatch.
+`runtime.GOOS` appears once in the codebase: the port-conflict hint in
+`web/server.go`, which picks between two format strings and is not dispatch.
 
 There is no `origin_detect_*.go` for other systems, so `internal/session`
 does not build on Windows or BSD. That is known; don't fix it in passing.

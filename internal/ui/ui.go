@@ -42,21 +42,64 @@ const (
 // RenderList renders sessions as a simple list (for -l flag)
 func RenderList(sessions []session.Session) {
 	if len(sessions) == 0 {
-		fmt.Println("No active Claude sessions found.")
+		fmt.Println("No active sessions found.")
 		return
 	}
 
-	l := calcSessionLayout(getTerminalWidth())
+	showHarness := MixedHarnesses(sessions)
+	l := calcSessionLayout(getTerminalWidth(), showHarness)
 
 	var buf strings.Builder
 	buf.WriteString(sessionHeader(l, "") + "\n")
 	buf.WriteString(strings.Repeat("─", l.totalWidth) + "\n")
 
 	for _, s := range sessions {
-		renderSessionRow(&buf, s, l, "\n", "")
+		renderSessionRow(&buf, s, l, "\n", "", showHarness)
 	}
 
 	fmt.Print(buf.String())
+}
+
+// MixedHarnesses reports whether these sessions come from more than one coding
+// agent.
+//
+// It is what decides whether rows carry a harness tag. Tagging only in mixed
+// company means someone running a single agent sees exactly the dashboard they
+// saw before, and someone running two never has to guess which row is which --
+// tagging one agent and not the other would leave the untagged rows ambiguous
+// to anyone who does not already know the feature exists.
+func MixedHarnesses(sessions []session.Session) bool {
+	var first session.Harness
+	for _, s := range sessions {
+		if s.Harness == "" {
+			continue
+		}
+		if first == "" {
+			first = s.Harness
+			continue
+		}
+		if s.Harness != first {
+			return true
+		}
+	}
+	return false
+}
+
+// FilterByHarness returns only the sessions belonging to h, or all of them when
+// h is empty. It is a display filter, not a discovery one: both agents are
+// always scanned, so toggling it costs nothing and never hides a session csm
+// failed to find.
+func FilterByHarness(sessions []session.Session, h session.Harness) []session.Session {
+	if h == "" {
+		return sessions
+	}
+	filtered := make([]session.Session, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Harness == h {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 // sessionHeader returns the column header row matching the given layout.
@@ -122,16 +165,34 @@ func ActiveSessions(sessions []session.Session) []session.Session {
 	return active
 }
 
+// LiveView is one frame of the live dashboard. It is a struct because the frame
+// outgrew a readable argument list once the harness filter joined it, and every
+// field is something the footer or a row has to know.
+type LiveView struct {
+	// Sessions is the already-filtered set to display.
+	Sessions     []session.Session
+	WebURL       string // when non-empty, the footer offers the web dashboard
+	ClaudeStatus *session.ClaudeStatus
+	// Selected indexes ActiveSessions(Sessions), or -1 for no selection.
+	Selected int
+	// ActionMsg is one line of feedback from the last key the user pressed,
+	// or "" for none.
+	ActionMsg string
+	// UpdateNotice announces a newer csm release, or "" for none.
+	UpdateNotice string
+	// Filter is the harness the view is restricted to, or "" for all.
+	Filter session.Harness
+	// Mixed reports whether both agents were present *before* filtering, which
+	// is what decides whether rows carry a harness tag. Taken before the filter
+	// so narrowing to one agent still shows which one you are looking at.
+	Mixed bool
+}
+
 // RenderLive renders the live dashboard view.
 // Uses \r\n for newlines to work correctly in raw terminal mode.
-// If webURL is non-empty, the web dashboard shortcut is shown in the footer.
-// selected is an index into ActiveSessions(sessions), or -1 for no selection.
-// actionMsg is one line of feedback from the last key the user pressed, or ""
-// for none.
-// updateNotice announces a newer csm release, or "" for none.
-func RenderLive(sessions []session.Session, webURL string, claudeStatus *session.ClaudeStatus, selected int, actionMsg, updateNotice string) {
+func RenderLive(v LiveView) {
 	// Set terminal title with status summary
-	SetTerminalTitle(buildTerminalTitle(sessions))
+	SetTerminalTitle(buildTerminalTitle(v.Sessions))
 
 	// Build the whole frame in memory and write it out in a single syscall.
 	// Printing each line separately means the terminal can render partway
@@ -146,9 +207,13 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 	buf.WriteString("\033[H")
 
 	// Header
-	fmt.Fprintf(&buf, "%sClaude Code Sessions%s%s%s", Bold, Reset, rawNewline, rawNewline)
+	fmt.Fprintf(&buf, "%sCoding Sessions%s", Bold, Reset)
+	if v.Filter != "" {
+		fmt.Fprintf(&buf, " %s(%s only)%s", Dim, harnessLabel(v.Filter), Reset)
+	}
+	fmt.Fprintf(&buf, "%s%s", rawNewline, rawNewline)
 
-	active := ActiveSessions(sessions)
+	active := ActiveSessions(v.Sessions)
 
 	// Status summary (only active sessions)
 	counts := countByStatus(active)
@@ -160,9 +225,9 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 	buf.WriteString(rawNewline)
 
 	if len(active) == 0 {
-		fmt.Fprintf(&buf, "%sNo active Claude sessions.%s%s", Dim, Reset, rawNewline)
+		fmt.Fprintf(&buf, "%sNo active sessions.%s%s", Dim, Reset, rawNewline)
 	} else {
-		l := calcSessionLayout(getTerminalWidth())
+		l := calcSessionLayout(getTerminalWidth(), v.Mixed)
 
 		// Column headers
 		fmt.Fprintf(&buf, "%s%s", sessionHeader(l, unselectedMarker), rawNewline)
@@ -170,24 +235,24 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 
 		for i, s := range active {
 			marker := unselectedMarker
-			if i == selected {
+			if i == v.Selected {
 				marker = selectedMarker
 			}
-			renderSessionRow(&buf, s, l, rawNewline, marker)
+			renderSessionRow(&buf, s, l, rawNewline, marker, v.Mixed)
 		}
 	}
 
 	// Show Claude service status
 	statusLink := terminalLink("https://status.claude.com/", "status.claude.com")
 	buf.WriteString(rawNewline)
-	if claudeStatus != nil && claudeStatus.Available {
-		switch claudeStatus.Indicator {
+	if v.ClaudeStatus != nil && v.ClaudeStatus.Available {
+		switch v.ClaudeStatus.Indicator {
 		case "minor":
-			fmt.Fprintf(&buf, "%s%s Claude: %s - %s%s%s", Yellow, "\u26A0", claudeStatus.Description, statusLink, Reset, rawNewline)
+			fmt.Fprintf(&buf, "%s%s Claude: %s - %s%s%s", Yellow, "\u26A0", v.ClaudeStatus.Description, statusLink, Reset, rawNewline)
 		case "major", "critical":
-			fmt.Fprintf(&buf, "%s%s Claude: %s - %s%s%s", Red, "\u2716", claudeStatus.Description, statusLink, Reset, rawNewline)
+			fmt.Fprintf(&buf, "%s%s Claude: %s - %s%s%s", Red, "\u2716", v.ClaudeStatus.Description, statusLink, Reset, rawNewline)
 		default:
-			fmt.Fprintf(&buf, "%sClaude: %s - %s%s%s", Dim, claudeStatus.Description, statusLink, Reset, rawNewline)
+			fmt.Fprintf(&buf, "%sClaude: %s - %s%s%s", Dim, v.ClaudeStatus.Description, statusLink, Reset, rawNewline)
 		}
 	} else {
 		fmt.Fprintf(&buf, "%sClaude: Status unavailable - %s%s%s", Dim, statusLink, Reset, rawNewline)
@@ -195,21 +260,27 @@ func RenderLive(sessions []session.Session, webURL string, claudeStatus *session
 
 	// Feedback from the last jump attempt, on its own line so it never shifts
 	// the table.
-	if actionMsg != "" {
-		fmt.Fprintf(&buf, "%s%s%s%s", Dim, sanitizeForTerminal(actionMsg), Reset, rawNewline)
+	if v.ActionMsg != "" {
+		fmt.Fprintf(&buf, "%s%s%s%s", Dim, sanitizeForTerminal(v.ActionMsg), Reset, rawNewline)
 	}
 
 	// A newer release, if one was found. Above the help line so it reads as
 	// part of the footer rather than as a row of the table.
-	if updateNotice != "" {
-		fmt.Fprintf(&buf, "%s%s%s%s", Yellow, sanitizeForTerminal(updateNotice), Reset, rawNewline)
+	if v.UpdateNotice != "" {
+		fmt.Fprintf(&buf, "%s%s%s%s", Yellow, sanitizeForTerminal(v.UpdateNotice), Reset, rawNewline)
 	}
 
-	// Show help footer
-	if webURL != "" {
-		fmt.Fprintf(&buf, "%s↑↓: select | Enter: jump | h: history | u: usage | w: open webview (%s) | Ctrl+C: quit%s%s", Dim, webURL, Reset, rawNewline)
+	// Show help footer. The harness filter is only offered when there is
+	// something to filter: on a single-agent machine the key does nothing and
+	// advertising it would be noise.
+	keys := "↑↓: select | Enter: jump | h: history | u: usage"
+	if v.Mixed {
+		keys += " | f: filter"
+	}
+	if v.WebURL != "" {
+		fmt.Fprintf(&buf, "%s%s | w: open webview (%s) | Ctrl+C: quit%s%s", Dim, keys, v.WebURL, Reset, rawNewline)
 	} else {
-		fmt.Fprintf(&buf, "%s↑↓: select | Enter: jump | h: history | u: usage | Ctrl+C: quit%s%s", Dim, Reset, rawNewline)
+		fmt.Fprintf(&buf, "%s%s | Ctrl+C: quit%s%s", Dim, keys, Reset, rawNewline)
 	}
 
 	fmt.Print(buf.String())
@@ -455,26 +526,45 @@ func formatContext(s session.Session, width int) string {
 	return bar
 }
 
-// formatOrigin renders the session origin cell, padded to exactly width visible chars.
+// formatOrigin renders the origin cell, padded to exactly width visible chars.
 // Returns an empty string when the column is disabled (width == 0).
-func formatOrigin(o session.Origin, width int) string {
+//
+// The agent badge follows the origin name, one space behind it: the origin is
+// this column's subject and the badge qualifies it, so it has to read as
+// attached to the name. Padding the name to a fixed width first would line the
+// badges up into a column of their own, which is the opposite -- it reads as a
+// separate field again, which is what moving it here was meant to fix. All the
+// slack goes to the right of the cell instead, exactly as formatProject does
+// with its own suffixes.
+func formatOrigin(s session.Session, width int, showHarness bool) string {
 	if width <= 0 {
 		return ""
 	}
-	text := o.Display
+
+	// The name is capped so the longest badge still fits; harnessBadgeWidth is
+	// what calcSessionLayout added to the column for it.
+	nameWidth := width
+	if showHarness {
+		nameWidth -= harnessBadgeWidth
+	}
+	if nameWidth < 1 {
+		nameWidth = 1
+	}
+
+	text := s.Origin.Display
 	if text == "" {
 		text = "-"
 	}
 	// Runes, not bytes: slicing by byte can split a multi-byte character in
 	// half and mis-measures the padding.
 	runes := []rune(text)
-	if len(runes) > width {
-		runes = runes[:width]
+	if len(runes) > nameWidth {
+		runes = runes[:nameWidth]
 		text = string(runes)
 	}
-	padding := strings.Repeat(" ", width-len(runes))
+
 	var color string
-	switch o.Category {
+	switch s.Origin.Category {
 	case session.OriginTerminal:
 		color = Gray
 	case session.OriginIDE:
@@ -484,7 +574,20 @@ func formatOrigin(o session.Origin, width int) string {
 	default:
 		color = Dim
 	}
-	return color + text + Reset + padding
+
+	cell := color + text + Reset
+	visible := len(runes)
+
+	if showHarness && s.Harness != "" {
+		badge := "[" + harnessLabel(s.Harness) + "]"
+		cell += " " + Dim + badge + Reset
+		visible += 1 + len([]rune(badge))
+	}
+
+	if visible < width {
+		cell += strings.Repeat(" ", width-visible)
+	}
+	return cell
 }
 
 // renderSessionRow renders a single session row using the given layout.
@@ -492,7 +595,8 @@ func formatOrigin(o session.Origin, width int) string {
 // A second indented line shows the last message using the full width, followed
 // by any subagent rows. marker fills the left gutter; its width is carved out
 // of the row, so selected and unselected markers must be the same width.
-func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, nl string, marker string) {
+func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, nl string, marker string,
+	showHarness bool) {
 	activity := formatElapsed(time.Since(s.LastActivity))
 	if s.Status == session.StatusWorking {
 		activity = "Now"
@@ -509,18 +613,22 @@ func renderSessionRow(buf *strings.Builder, s session.Session, l sessionLayout, 
 
 	var row string
 	if l.origin > 0 {
+		// The agent rides in the origin cell: both answer "where did this come
+		// from". When the terminal is too narrow for that column it falls back
+		// to the project cell rather than disappearing -- on a mixed dashboard
+		// an untagged row is an ambiguous row, whatever the width.
 		row = fmt.Sprintf("%s%s %s %s %s %-*s",
 			marker,
 			formatStatus(s.Status, l.status),
-			formatProject(s, l.project),
-			formatOrigin(s.Origin, l.origin),
+			formatProject(s, l.project, false),
+			formatOrigin(s, l.origin, showHarness),
 			formatContext(s, l.context),
 			activityWidth, activity)
 	} else {
 		row = fmt.Sprintf("%s%s %s %s %-*s",
 			marker,
 			formatStatus(s.Status, l.status),
-			formatProject(s, l.project),
+			formatProject(s, l.project, showHarness),
 			formatContext(s, l.context),
 			activityWidth, activity)
 	}
@@ -606,12 +714,33 @@ func renderSubagentRow(buf *strings.Builder, sa session.Subagent, l sessionLayou
 	}
 }
 
+// harnessLabel is the short name a harness goes by in the UI.
+func harnessLabel(h session.Harness) string {
+	switch h {
+	case session.HarnessClaude:
+		return "cc"
+	case session.HarnessOMP:
+		return "omp"
+	default:
+		return string(h)
+	}
+}
+
 // formatProject formats the project name with optional indicators, padded to maxLen visible chars
-func formatProject(s session.Session, maxLen int) string {
+func formatProject(s session.Session, maxLen int, showHarness bool) string {
 	// Sanitize to prevent ANSI escape injection from log/filesystem content
 	name := sanitizeForTerminal(s.Project)
 	var suffixes []string
 	var suffixLens []int // visible length of each suffix (excluding space)
+
+	// Which agent this row belongs to, first so the width-shedding loop below
+	// drops it last: on a mixed dashboard, knowing which agent a row is matters
+	// more than its branch or title.
+	if showHarness && s.Harness != "" {
+		label := harnessLabel(s.Harness)
+		suffixes = append(suffixes, Dim+"["+label+"]"+Reset)
+		suffixLens = append(suffixLens, 2+len([]rune(label))) // [label]
+	}
 
 	// Add git branch if present (show first, most useful)
 	if s.GitBranch != "" {

@@ -148,7 +148,7 @@ func TestDiscoverReportsProcessScanFailure(t *testing.T) {
 // sees a fresh Discover rather than a value cached before it changed anything.
 func clearScanCaches() {
 	processScanMu.Lock()
-	processScanDirs, processScanOrphaned = nil, nil
+	processScanProcs, processScanValid = nil, false
 	processScanRegistry, processScanHaveReg = nil, false
 	processScanAt = time.Time{}
 	processScanMu.Unlock()

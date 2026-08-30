@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -213,8 +214,8 @@ func ClaudeProjectsDir() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// procInfo is one live process, holding the three fields the pairing and ghost
-// rules read. comm is the name the OS accounts the process under: a basename,
+// procInfo is one live process, holding the fields the pairing and ghost rules
+// read. comm is the name the OS accounts the process under: a basename,
 // truncated to 15 bytes on Linux and 16 on macOS.
 type procInfo struct {
 	pid, ppid int
@@ -229,7 +230,7 @@ type procInfo struct {
 var listProcesses = listProcessesNative
 
 // getProcessCwdFn is the per-process working-directory lookup. A var so a test
-// can drive getRunningClaudeDirs without a real process behind each pid.
+// can drive getRunningHarnessProcs without a real process behind each pid.
 var getProcessCwdFn = getProcessCwd
 
 // processArgvFn reads one process's full argument vector. A var so a test can
@@ -238,68 +239,84 @@ var getProcessCwdFn = getProcessCwd
 // See listprocs_linux.go and listprocs_darwin.go for the implementations.
 var processArgvFn = processArgv
 
-// getRunningClaudeDirs returns a map of encoded directory names to PIDs where
-// Claude processes are running.
+// processTerminalFn reads one process's controlling terminal. A var so a test
+// can supply one without a real process behind the pid.
 //
-// It reports the error rather than an empty map: "nothing is running" and "the
-// process scan failed" produce identical results downstream, and every session
-// would be reported Inactive and filtered out of the dashboard. csm would say
-// "No active Claude sessions." with total confidence while sessions ran.
-// The keys are in the same format as the project directory names (e.g., -Users-username-Projects-...)
-// Multiple Claude processes in the same directory are tracked as separate PIDs.
+// See listprocs_linux.go and listprocs_darwin.go for the implementations.
+var processTerminalFn = processTerminal
+
+// getRunningHarnessProcs returns one entry per running coding-agent process,
+// carrying the harness it belongs to, its working directory, its controlling
+// terminal and whether it has been orphaned.
 //
-// The second result is the set of claude pids whose parent shell or IDE is
-// gone and init has adopted them (ppid 1). That, not silence, is what
-// distinguishes a ghost from a session someone left open overnight. It is a
-// side lookup rather than a field on the pid list so pairProcess and the
-// registry code keep working on plain pids.
+// It reports the error rather than an empty slice: "nothing is running" and
+// "the process scan failed" produce identical results downstream, and every
+// session would be reported Inactive and filtered out of the dashboard. csm
+// would say "No active sessions." with total confidence while sessions ran.
+//
+// A process whose cwd cannot be read is dropped, because a project is the only
+// thing callers use the cwd for and an unplaceable process cannot be joined to
+// any log directory.
+//
+// orphan (ppid 1) is a field on the process rather than a side lookup because
+// it is read off this same ps output; splitting the two let them disagree about
+// what was running. That, not silence, is what distinguishes a ghost from a
+// session someone left open overnight.
 //
 // ponytail: ppid==1 is exact on macOS; on Linux a subreaper (some systemd
 // user sessions) can adopt orphans instead of pid 1, which this misses.
-func getRunningClaudeDirs() (map[string][]int, map[int]bool, error) {
-	dirs := make(map[string][]int)
-	orphaned := make(map[int]bool)
-
-	procs, err := listProcesses()
+func getRunningHarnessProcs() ([]harnessProcess, error) {
+	rows, err := listProcesses()
 	if err != nil {
-		return nil, nil, fmt.Errorf("scanning processes: %w", err)
+		return nil, fmt.Errorf("scanning processes: %w", err)
 	}
 	// A platform that returns an empty list with no error puts back the bug this
 	// whole path exists to remove, so the invariant is checked here rather than
 	// trusted to each implementation.
-	if len(procs) == 0 {
-		return nil, nil, errors.New("scanning processes: the process table came back empty")
+	if len(rows) == 0 {
+		return nil, errors.New("scanning processes: the process table came back empty")
 	}
 
-	for _, row := range procs {
+	var procs []harnessProcess
+	for _, row := range rows {
 		// comm narrows the table to the few pids worth a second read; argv is
 		// what actually identifies the process. Discovery and the pre-SIGTERM
 		// recheck in KillGhostProcesses run the same classifyProcess over the
 		// same kind of input, so a pid this loop lists can only fail that
 		// recheck by having been recycled -- not by the two disagreeing about
-		// what a claude process looks like.
+		// what an agent's process looks like.
 		if !harnessCandidate(row.comm) {
 			continue
 		}
 		argv, err := processArgvFn(row.pid)
-		if err != nil || classifyProcess(argv) != HarnessClaude {
+		if err != nil {
 			continue
 		}
-		if row.ppid == 1 {
-			orphaned[row.pid] = true
+		harness := classifyProcess(argv)
+		if harness == HarnessNone {
+			continue
 		}
 
-		// Get cwd for each process
-		path, err := getProcessCwdFn(row.pid)
-		if err != nil || path == "" {
+		cwd, err := getProcessCwdFn(row.pid)
+		if err != nil || cwd == "" {
 			continue
 		}
-		// Convert to encoded format (same as project directory names)
-		encoded := encodeProjectPath(path)
-		dirs[encoded] = append(dirs[encoded], row.pid)
+		// The controlling terminal is read per candidate rather than carried in
+		// procInfo: only omp pairing uses it, and by here the table is already
+		// down to the few pids that are agents. A process without one, or whose
+		// stdin cannot be read, simply pairs unconfidently.
+		terminal, _ := processTerminalFn(row.pid)
+
+		procs = append(procs, harnessProcess{
+			pid:      row.pid,
+			harness:  harness,
+			cwd:      cwd,
+			terminal: terminal,
+			orphan:   row.ppid == 1,
+		})
 	}
 
-	return dirs, orphaned, nil
+	return procs, nil
 }
 
 // sessionIDFromLogFile returns the session UUID from a log file path.
@@ -329,7 +346,7 @@ func encodeProjectPath(path string) string {
 	}, path)
 }
 
-// Discover finds all active Claude sessions
+// Discover finds every live and recently-live session, from both agents.
 func Discover() ([]Session, error) {
 	// Serve a recent result if the TUI loop, SSE hub, and/or HTTP handlers are
 	// all refreshing within the same tick.
@@ -342,19 +359,29 @@ func Discover() ([]Session, error) {
 		return nil, err
 	}
 
+	// A missing projects directory means Claude Code has never run here, which
+	// is an ordinary state now that csm watches a second agent: aborting on it
+	// meant an omp-only machine got "Cannot read sessions: no such file or
+	// directory" on every tick and never reached discoverOMP below. Any other
+	// read error still aborts — that one is a real fault, and reporting no
+	// sessions would be indistinguishable from having none.
 	entries, err := os.ReadDir(projectsDir)
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
-	// Get directories where Claude is currently running, along with Claude
-	// Code's own pid <-> session registry when this version writes one. Both
-	// come from one TTL-cached snapshot so they cannot disagree about what is
-	// running, and so the process table is not re-read on every refresh.
-	runningDirs, orphanedPIDs, registry, haveRegistry, err := cachedRunningClaudeDirs()
+	// Get every running coding-agent process, along with Claude Code's own
+	// pid <-> session registry when this version writes one. Both come from one
+	// TTL-cached snapshot so they cannot disagree about what is running, and so
+	// ps/lsof are not spawned on every refresh.
+	procs, registry, haveRegistry, err := cachedRunningHarnessProcs()
 	if err != nil {
 		return nil, err
 	}
+	// Claude Code buckets its logs by the encoded working directory, so keying
+	// the processes the same way makes the join a plain string-key match.
+	runningDirs := pidsByDir(procs, HarnessClaude, encodeProjectPath)
+	procByPID := procsByPID(procs)
 
 	var sessions []Session
 	// Track the log files we actually parse this sweep so stale entries can be
@@ -424,7 +451,7 @@ func Discover() ([]Session, error) {
 			// Orphan-ness follows whichever pid the pairing settled on; with
 			// no pid (unconfident or unknown process) the session cannot be
 			// a ghost, which is the safe side.
-			orphaned := orphanedPIDs[pid]
+			orphaned := procByPID[pid].orphan
 
 			session, err := parseSession(entry.Name(), logFile, isRunning, pid, orphaned)
 			if err != nil {
@@ -435,6 +462,11 @@ func Discover() ([]Session, error) {
 			sessions = append(sessions, session)
 		}
 	}
+
+	// The second producer. It reads a different store in a different format and
+	// returns the same []Session, which is why every view downstream needs no
+	// idea that more than one agent exists.
+	sessions = append(sessions, discoverOMP(procs, liveFiles)...)
 
 	// Evict parse-cache entries for logs no longer in the active set, keeping the
 	// cache bounded to the current working set over a long-running server.
@@ -501,23 +533,28 @@ func statusPriority(s Status) int {
 // excluding logs from sessions that ended hours or days ago.
 const activeLogFreshnessWindow = 30 * time.Minute
 
-// findActiveLogs returns all active JSONL log files for a project directory.
-// If runningCount > 0, returns at least that many files (the most recently
-// modified), plus any additional files modified within activeLogFreshnessWindow.
-// If runningCount == 0, returns only the single most recent file.
-func findActiveLogs(dir string, runningCount int) ([]string, error) {
+// logCandidate is one session log a directory holds, with the stat fields the
+// selection and the parse cache both need.
+type logCandidate struct {
+	path    string
+	modTime time.Time
+	size    int64
+}
+
+// listLogsByRecency returns a project directory's session logs, newest first.
+//
+// Split out from findActiveLogs so a caller that needs to look at the newest log
+// before it knows how many processes are running -- discoverOMP, which reads the
+// bucket's working directory out of that log -- does not have to scan the
+// directory twice per tick. It also hands back modTime and size, so that caller
+// can go straight to the parse cache instead of stat-ing again.
+func listLogsByRecency(dir string) ([]logCandidate, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	type logEntry struct {
-		path    string
-		modTime time.Time
-		size    int64
-	}
-
-	var logs []logEntry
+	var logs []logCandidate
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -533,21 +570,27 @@ func findActiveLogs(dir string, runningCount int) ([]string, error) {
 		if err != nil {
 			continue
 		}
-		logs = append(logs, logEntry{
+		logs = append(logs, logCandidate{
 			path:    filepath.Join(dir, entry.Name()),
 			modTime: info.ModTime(),
 			size:    info.Size(),
 		})
 	}
 
-	if len(logs) == 0 {
-		return nil, nil
-	}
-
-	// Sort by modification time, newest first
 	sort.Slice(logs, func(i, j int) bool {
 		return logs[i].modTime.After(logs[j].modTime)
 	})
+	return logs, nil
+}
+
+// selectActiveLogs picks which of a directory's logs are worth parsing.
+// If runningCount > 0, it returns at least that many (the most recently
+// modified), plus any additional file modified within activeLogFreshnessWindow.
+// If runningCount == 0, it returns only the single most recent file.
+func selectActiveLogs(logs []logCandidate, runningCount int) []string {
+	if len(logs) == 0 {
+		return nil
+	}
 
 	if runningCount == 0 {
 		// No running processes: return only the most recent file
@@ -556,13 +599,13 @@ func findActiveLogs(dir string, runningCount int) ([]string, error) {
 			if l.size > 0 {
 				// Check if there's an even newer empty file
 				if logs[0].size == 0 && logs[0].modTime.After(l.modTime) {
-					return []string{logs[0].path}, nil
+					return []string{logs[0].path}
 				}
-				return []string{l.path}, nil
+				return []string{l.path}
 			}
 		}
 		// All empty, return newest
-		return []string{logs[0].path}, nil
+		return []string{logs[0].path}
 	}
 
 	// Running processes: collect active logs
@@ -583,7 +626,16 @@ func findActiveLogs(dir string, runningCount int) ([]string, error) {
 		}
 	}
 
-	return result, nil
+	return result
+}
+
+// findActiveLogs returns all active JSONL log files for a project directory.
+func findActiveLogs(dir string, runningCount int) ([]string, error) {
+	logs, err := listLogsByRecency(dir)
+	if err != nil {
+		return nil, err
+	}
+	return selectActiveLogs(logs, runningCount), nil
 }
 
 // parsedLog holds everything a single pass over a JSONL log file yields.
@@ -624,6 +676,24 @@ func parseLogFile(logFile string, keep int) (parsedLog, error) {
 	return parseLogFileWithLimit(logFile, keep, maxLogLineBytes)
 }
 
+// newLogScanner returns a line scanner for a JSONL session log, bounded at
+// maxLineBytes.
+//
+// The initial buffer's capacity must not exceed maxLineBytes: bufio.Scanner only
+// grows a token buffer when it needs to, so a capacity already bigger than
+// maxLineBytes would let a token past that limit through untouched. Both
+// harnesses' parsers want exactly this, and a second copy of the reasoning is a
+// second place for it to rot.
+func newLogScanner(file *os.File, maxLineBytes int) *bufio.Scanner {
+	scanner := bufio.NewScanner(file)
+	initialBufSize := 64 * 1024
+	if maxLineBytes < initialBufSize {
+		initialBufSize = maxLineBytes
+	}
+	scanner.Buffer(make([]byte, 0, initialBufSize), maxLineBytes)
+	return scanner
+}
+
 // parseLogFileWithLimit is parseLogFile with the scanner's max-line-size made
 // an explicit parameter, so tests can reproduce an oversized-line scan error
 // without allocating a real maxLogLineBytes-sized line.
@@ -637,16 +707,7 @@ func parseLogFileWithLimit(logFile string, keep int, maxLineBytes int) (parsedLo
 	var pl parsedLog
 	var entries []LogEntry
 
-	scanner := bufio.NewScanner(file)
-	// The initial buffer's capacity must not exceed maxLineBytes: bufio.Scanner
-	// only grows a token buffer when it needs to, so a capacity already bigger
-	// than maxLineBytes would let a token past that limit through untouched.
-	initialBufSize := 64 * 1024
-	if maxLineBytes < initialBufSize {
-		initialBufSize = maxLineBytes
-	}
-	buf := make([]byte, 0, initialBufSize)
-	scanner.Buffer(buf, maxLineBytes)
+	scanner := newLogScanner(file, maxLineBytes)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1008,8 +1069,9 @@ func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
 // GhostThreshold is how long an orphaned process's log must be silent before
 // it is reported as a ghost and --kill-ghosts will offer to terminate it.
 //
-// Being orphaned (see getRunningClaudeDirs) is the primary signal; the hour of
-// silence guards the one legitimate orphan, a headless `claude -p` job whose
+// Being orphaned (harnessProcess.orphan, set by getRunningHarnessProcs) is the
+// primary signal; the hour of silence guards the one legitimate orphan, a
+// headless `claude -p` job whose
 // launching shell has exited but which is still producing output. Waiting
 // longer to reap a true orphan costs some idle memory; reaping too early kills
 // work in progress.
@@ -1021,6 +1083,18 @@ const GhostThreshold = time.Hour
 // which is what keeps a session from staying stuck on "Working" after Claude has
 // yielded back to the user without writing a turn-completion marker.
 const recentActivityWindow = 2 * time.Minute
+
+// logWriteWindow is how recently the log file must have been written for the
+// write itself to count as evidence of work, independent of what the parsed
+// entries say. It covers a session mid-write, whose newest entry is not on disk
+// yet.
+const logWriteWindow = 30 * time.Second
+
+// sessionStaleWindow is the age past which a running session's newest entry
+// stops supporting any "Working" inference at all. Both harnesses use these
+// three windows, so that the status column means the same thing on every row of
+// a mixed dashboard.
+const sessionStaleWindow = 5 * time.Minute
 
 // determineStatus analyzes log entries to determine session status.
 // fileModTime is the log file's modification time, used to detect recent writes
@@ -1177,44 +1251,28 @@ func determineStatus(entries []LogEntry, isRunning bool, fileModTime time.Time) 
 		return StatusWorking, task
 	}
 
-	// If the log file was recently modified (within 30s), the session is actively
-	// writing — even if parsed entries are stale (e.g., streaming writes in progress).
-	if !fileModTime.IsZero() && time.Since(fileModTime) < 30*time.Second {
-		task := extractTask(lastAssistant)
-		return StatusWorking, task
+	// A user message that carries only a tool_result does NOT count as a prompt:
+	// it is the tail of Claude's own turn, and treating it as work is what made
+	// sessions stick on "Working" after Claude yielded back to the user without
+	// a turn_duration. omp needs no such test, which is why the decision is
+	// made here rather than inside the shared tail.
+	var lastPrompt time.Time
+	if lastUser != nil && (lastAssistant == nil || lastUser.Timestamp.After(lastAssistant.Timestamp)) &&
+		isUserPrompt(lastUser) {
+		lastPrompt = lastUser.Timestamp
 	}
-
-	// If process is running but log is stale, it's Waiting (not ghost)
-	// The user may be away or thinking - this is a valid active session
-	// Ghost detection is only for --kill-ghosts to find truly orphaned processes
-	if time.Since(lastTimestamp) > 5*time.Minute {
-		return StatusWaiting, "-"
-	}
-
-	// If assistant is recent, it's working. Use 2-minute window to avoid
-	// flipping to "Waiting" during brief gaps between log writes.
+	var lastAssistantAt time.Time
 	if lastAssistant != nil {
-		task := extractTask(lastAssistant)
-		if time.Since(lastAssistant.Timestamp) < recentActivityWindow {
-			return StatusWorking, task
-		}
+		lastAssistantAt = lastAssistant.Timestamp
 	}
 
-	// If a genuine user prompt is the most recent entry (e.g. first message in
-	// session), Claude is processing it — but only while the prompt is recent. A
-	// user message that only carries a tool_result does NOT count: that is the
-	// tail of Claude's own turn, not a new prompt, and treating it as work is
-	// what made sessions stick on "Working" after Claude yielded back to the user
-	// without a turn_duration. The recency bound matters just as much: a genuine
-	// prompt left unanswered (user walked away, or Claude stalled) must age out to
-	// Waiting instead of staying pinned on "Working".
-	if lastUser != nil && (lastAssistant == nil || lastUser.Timestamp.After(lastAssistant.Timestamp)) {
-		if isUserPrompt(lastUser) && time.Since(lastUser.Timestamp) < recentActivityWindow {
-			return StatusWorking, "Processing..."
-		}
-	}
-
-	return StatusWaiting, "-"
+	return ageStatus(activity{
+		fileModTime:   fileModTime,
+		lastEntry:     lastTimestamp,
+		lastAssistant: lastAssistantAt,
+		lastPrompt:    lastPrompt,
+		task:          func() string { return extractTask(lastAssistant) },
+	})
 }
 
 // isUserPrompt reports whether a user log entry is a genuine user prompt
@@ -1233,6 +1291,25 @@ func isUserPrompt(entry *LogEntry) bool {
 	return false
 }
 
+// taskLabel condenses a message into the single line the task column shows.
+//
+// Runes, not bytes. The byte slice this replaces (`text[:47]`) puts a
+// replacement character in the dashboard the first time a task begins with
+// anything non-ASCII. The line cut comes first so that a long first line is
+// capped, rather than a cap landing past a newline and hiding it.
+func taskLabel(text string) string {
+	if text == "" {
+		return "-"
+	}
+	if idx := strings.Index(text, "\n"); idx > 0 {
+		text = text[:idx]
+	}
+	if runes := []rune(text); len(runes) > 50 {
+		return string(runes[:47]) + "..."
+	}
+	return text
+}
+
 // extractTask extracts a task description from an assistant entry
 func extractTask(entry *LogEntry) string {
 	if entry == nil || entry.Message == nil {
@@ -1244,20 +1321,63 @@ func extractTask(entry *LogEntry) string {
 			return "Using: " + content.Name
 		}
 		if content.Type == "text" && content.Text != "" {
-			// Truncate long text
-			text := content.Text
-			if len(text) > 50 {
-				text = text[:47] + "..."
-			}
-			// Take first line only
-			if idx := strings.Index(text, "\n"); idx > 0 {
-				text = text[:idx]
-			}
-			return text
+			return taskLabel(content.Text)
 		}
 	}
 
 	return "-"
+}
+
+// activity is what the shared tail of both harnesses' status rules needs: four
+// moments and a way to label the work. Timestamps are zero when the thing they
+// describe does not exist.
+type activity struct {
+	fileModTime time.Time
+	// lastEntry is the newest timestamp of any entry, however uninteresting.
+	lastEntry time.Time
+	// lastAssistant is when the agent last said something.
+	lastAssistant time.Time
+	// lastPrompt is when the user last said something *that counts as a prompt
+	// and is newer than lastAssistant*. Deciding that is the harness's job:
+	// Claude Code records tool results as user messages and omp does not.
+	lastPrompt time.Time
+	// task labels a Working row. Called only on the paths that report Working,
+	// so neither caller builds a label it will not use.
+	task func() string
+}
+
+// ageStatus is the tail both determineStatus and determineOMPStatus end in.
+//
+// Once each harness's own evidence has had its say -- pending tools, turn
+// markers, exits -- what is left is the same four rules about how recently
+// anything happened, on the same three windows. Sharing them is what makes
+// "both harnesses must mean the same thing by Working" structural instead of a
+// comment two functions are asked to honour.
+func ageStatus(a activity) (Status, string) {
+	// The write itself is evidence, for the moments when the newest entry is not
+	// on disk yet.
+	if !a.fileModTime.IsZero() && time.Since(a.fileModTime) < logWriteWindow {
+		return StatusWorking, a.task()
+	}
+
+	// Running, but nothing has happened for long enough that no signal below
+	// deserves to be read as work in progress.
+	if time.Since(a.lastEntry) > sessionStaleWindow {
+		return StatusWaiting, "-"
+	}
+
+	if !a.lastAssistant.IsZero() && time.Since(a.lastAssistant) < recentActivityWindow {
+		return StatusWorking, a.task()
+	}
+
+	// A prompt with no answer yet. The recency bound matters as much as the
+	// prompt: one left unanswered because the user walked away must age out to
+	// Waiting rather than stay pinned on Working.
+	if !a.lastPrompt.IsZero() && time.Since(a.lastPrompt) < recentActivityWindow {
+		return StatusWorking, "Processing..."
+	}
+
+	return StatusWaiting, "-"
 }
 
 // GhostProcess represents an orphaned coding agent process
@@ -1265,9 +1385,9 @@ type GhostProcess struct {
 	PID     int
 	Project string
 	Age     time.Duration
-	// Harness is the agent this process is believed to belong to. It comes
-	// from the session, not from a fresh guess about the pid, because it is
-	// what the pre-SIGTERM recheck verifies the pid against.
+	// Harness is the agent this process is believed to belong to. It is what
+	// the pre-SIGTERM recheck is verified against, so it must come from the
+	// session, not from a fresh guess about the pid.
 	Harness Harness
 }
 

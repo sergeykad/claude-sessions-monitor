@@ -80,7 +80,6 @@ func main() {
 		ui.RenderHistory(sessions, *historyDays, false, "")
 		return
 	}
-
 	// Handle list mode
 	if *listOnce {
 		sessions, err := session.Discover()
@@ -107,6 +106,25 @@ func main() {
 
 	// Live view mode
 	os.Exit(runLiveView(*interval, *webMode, *webPort))
+}
+
+// nextHarnessFilter cycles the live view's harness filter: everything, then each
+// agent in turn.
+//
+// This is a view filter and deliberately not a CLI flag. Discovery always covers
+// every agent on the machine -- that is the point of the tool -- and which rows
+// you want to read right now is a property of the moment, not of how csm was
+// started. A flag would also have had to mean something for the web dashboard,
+// which has no key to press to undo it and serves more than one client.
+func nextHarnessFilter(current session.Harness) session.Harness {
+	switch current {
+	case "":
+		return session.HarnessClaude
+	case session.HarnessClaude:
+		return session.HarnessOMP
+	default:
+		return ""
+	}
 }
 
 // ViewMode represents the current display mode
@@ -180,6 +198,13 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 	// Sessions as of the last render, so a keypress acts on exactly the rows
 	// the user can see rather than re-discovering and racing the ticker.
 	var visible []session.Session
+	// Harness filter, cycled with `f`. Starts at "" — every agent — because
+	// tracking all of them is the default and the filter is only a reading aid.
+	var filter session.Harness
+	// Whether the last render saw more than one agent among the *visible* rows.
+	// The `f` handler reads it so the key is inert on a single-agent machine,
+	// which is what the footer promises by not advertising it there.
+	mixed := false
 
 	// Check for a newer release off the render path: upgrade.Notice blocks on
 	// the network, and a frame must never wait on github.com. The result
@@ -242,18 +267,35 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 			sessions, err := session.Discover()
 			// An empty dashboard and a failed scan look identical once the
 			// error is dropped, so the reason goes into the frame rather than
-			// leaving csm to report "No active Claude sessions." either way.
+			// leaving csm to report "No active sessions." either way.
 			msg := actionMsg
 			if err != nil {
 				msg = "Cannot read sessions: " + err.Error()
 			}
+			// Decided over the rows the frame will actually draw, and before the
+			// filter: RenderLive only shows ActiveSessions, so counting the
+			// Inactive ones tagged every row `[cc]` and advertised `f` on a
+			// Claude-only machine that merely had one stale omp bucket on disk.
+			// Taking it before the filter keeps the tag stable while `f` cycles,
+			// so the rows do not re-flow under the user.
+			mixed = ui.MixedHarnesses(ui.ActiveSessions(sessions))
+			sessions = ui.FilterByHarness(sessions, filter)
 			// Sessions come and go between frames, so the selection is clamped
 			// on every render rather than only when a key moves it.
 			visible = ui.ActiveSessions(sessions)
 			if selected >= len(visible) {
 				selected = len(visible) - 1
 			}
-			ui.RenderLive(sessions, webURL, lastClaudeStatus, selected, msg, updateNotice)
+			ui.RenderLive(ui.LiveView{
+				Sessions:     sessions,
+				WebURL:       webURL,
+				ClaudeStatus: lastClaudeStatus,
+				Selected:     selected,
+				ActionMsg:    msg,
+				UpdateNotice: updateNotice,
+				Filter:       filter,
+				Mixed:        mixed,
+			})
 		}
 		// Erase anything left over below this frame from a previous, longer
 		// one, once per render cycle rather than each view remembering to.
@@ -334,6 +376,18 @@ func runLiveView(interval time.Duration, webEnabled bool, webPort int) (code int
 				}
 			case 'r', 'R':
 				if viewMode == ViewModeUsage {
+					render()
+				}
+			case 'f', 'F':
+				// Only where the footer offers it. On a single-agent machine the
+				// key used to cycle anyway, landing the user on "No active
+				// sessions." with no footer entry naming the key that gets them
+				// back out.
+				if viewMode == ViewModeLive && mixed {
+					filter = nextHarnessFilter(filter)
+					// The row count changes with the filter, so a selection
+					// carried over would point at a different session.
+					selected = -1
 					render()
 				}
 			case 'w', 'W':

@@ -37,6 +37,49 @@ func (h Harness) String() string {
 	return string(h)
 }
 
+// harnessProcess is one running coding-agent process, as the scan found it.
+type harnessProcess struct {
+	pid     int
+	harness Harness
+	cwd     string // resolved working directory, absolute
+	// terminal is the controlling terminal's device path, or "" when the
+	// process has none or it could not be read. omp names its session
+	// breadcrumbs after this; see ompTerminalID.
+	terminal string
+	orphan   bool // parent shell or IDE is gone and init adopted it
+}
+
+// pidsByDir groups one harness's processes into the buckets its session store
+// uses, so a log directory joins to the processes running in it by a plain
+// string-key match. key turns a working directory into that bucket name: the
+// two harnesses encode it differently, and neither encoding is this function's
+// business.
+//
+// Several processes can share a directory (two sessions in two tabs), so the
+// values are lists.
+func pidsByDir(procs []harnessProcess, h Harness, key func(cwd string) string) map[string][]int {
+	dirs := make(map[string][]int)
+	for _, p := range procs {
+		if p.harness != h {
+			continue
+		}
+		k := key(p.cwd)
+		dirs[k] = append(dirs[k], p.pid)
+	}
+	return dirs
+}
+
+// procsByPID indexes the scan by pid, for the lookups that only make sense once
+// a pid has been paired to a specific log: whether it is orphaned, and which
+// terminal it is attached to.
+func procsByPID(procs []harnessProcess) map[int]harnessProcess {
+	byPID := make(map[int]harnessProcess, len(procs))
+	for _, p := range procs {
+		byPID[p.pid] = p
+	}
+	return byPID
+}
+
 // interpreters are the runtimes a harness can be launched through, where argv[0]
 // names the runtime and the program itself is a later argument.
 var interpreters = map[string]bool{"bun": true, "node": true, "deno": true}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -125,9 +126,33 @@ func getProcessCwd(pid int) (string, error) {
 		return "", err
 	}
 
-	cwd, err := parseLsofCwd(out)
+	cwd, err := parseLsofName(out)
 	if err != nil {
 		return "", fmt.Errorf("pid %d: %w", pid, err)
 	}
 	return cwd, nil
+}
+
+// processTerminal returns the device path of a process's controlling terminal,
+// or an error when it has none.
+//
+// stdin, not the kinfo_proc tty device number: stdin is the descriptor omp
+// itself calls ttyname(3) on to name its session breadcrumb, and turning a
+// dev_t back into a name needs devname(3) and so cgo. lsof is already how this
+// file reads a working directory, and -Fn prints the same one-field-per-line
+// format parseLsofName reads.
+func processTerminal(pid int) (string, error) {
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-a", "-d", "0", "-Fn").Output()
+	if err != nil {
+		return "", err
+	}
+
+	name, err := parseLsofName(out)
+	if err != nil {
+		return "", fmt.Errorf("pid %d: %w", pid, err)
+	}
+	if !strings.HasPrefix(name, "/dev/") {
+		return "", fmt.Errorf("pid %d: stdin is %q, not a terminal", pid, name)
+	}
+	return name, nil
 }

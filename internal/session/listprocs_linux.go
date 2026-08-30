@@ -112,3 +112,21 @@ func parseProcStat(data []byte) (comm string, ppid int, err error) {
 func getProcessCwd(pid int) (string, error) {
 	return os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "cwd"))
 }
+
+// processTerminal returns the device path of a process's controlling terminal,
+// or an error when it has none.
+//
+// It reads the stdin link rather than decoding the tty_nr field of
+// /proc/<pid>/stat, because stdin is the descriptor omp itself calls ttyname(3)
+// on to name its session breadcrumb. Decoding tty_nr would mean reassembling a
+// device number into a name csm would then have to hope matches.
+func processTerminal(pid int) (string, error) {
+	link, err := os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "fd", "0"))
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(link, "/dev/") {
+		return "", fmt.Errorf("pid %d: stdin is %q, not a terminal", pid, link)
+	}
+	return link, nil
+}

@@ -276,6 +276,11 @@
             return `<span class="status-badge"><span class="status-dot ${cls}"></span>${count} ${status}</span>`;
         }).join('');
 
+        // Tag rows with their agent only when more than one is on screen: with a
+        // single agent the tag says nothing, and tagging one but not the other
+        // would leave the untagged cards ambiguous.
+        const mixedHarnesses = new Set(currentSessions.map(s => s.harness).filter(Boolean)).size > 1;
+
         sessionsList.innerHTML = currentSessions.map(s => {
             const isInactive = s.status === 'Inactive';
             const cls = statusClass(s.status);
@@ -285,6 +290,13 @@
             const ctxCls = pct > 90 ? 'high' : pct > 75 ? 'medium' : 'low';
             const cardCls = isInactive ? 'session-card stopped' : 'session-card';
             const stoppedBadge = isInactive ? `<span class="stopped-badge">Stopped</span>` : '';
+            // Rendered further down, with the origin and context-window chips:
+            // it belongs to that cluster of "what this session is" identifiers,
+            // and sitting alone between the project name and the branch read
+            // like a stray word rather than a badge.
+            const harnessBadge = mixedHarnesses && s.harness
+                ? `<span class="badge session-harness-badge" title="${esc(harnessName(s.harness))}">${esc(s.harness)}</span>`
+                : '';
 
             return `<div class="${cardCls}" data-logfile="${esc(s.log_file || '')}" data-project="${esc(s.project)}">
                 <div class="session-top">
@@ -293,6 +305,7 @@
                     ${stoppedBadge}
                     ${s.git_branch ? `<span class="session-branch">${esc(s.git_branch)}</span>` : ''}
                     ${s.session_title ? `<span class="session-title">${esc(s.session_title)}</span>` : ''}
+                    ${harnessBadge}
                     ${s.origin && s.origin.category ? `<span class="badge session-origin origin-${esc(s.origin.category)}" title="${esc(s.origin.app || '')}">${esc(s.origin.display || s.origin.app || '')}</span>` : ''}
                     ${(s.context_window || 0) > 200000 ? `<span class="badge session-model-badge" title="${esc(s.model)}">1M</span>` : ''}
                     ${s.degraded ? `<span class="badge session-degraded-badge" title="${esc(s.degraded)}">?</span>` : ''}
@@ -988,6 +1001,16 @@
             case 'Waiting': return '\u25C9';      // ◉
             case 'Inactive': return '\u25CC';      // ◌
             default: return '\u25CC';
+        }
+    }
+
+    // The badge shows the short id the API sends; the tooltip spells it out, so
+    // "omp" on a card is never a mystery.
+    function harnessName(harness) {
+        switch (harness) {
+            case 'claude': return 'Claude Code';
+            case 'omp': return 'Oh My Pi';
+            default: return harness;
         }
     }
 

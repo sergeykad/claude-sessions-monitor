@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestClassifyOrigin(t *testing.T) {
 	tests := []struct {
@@ -196,5 +199,36 @@ func TestNewOriginUnknownSlug(t *testing.T) {
 	o := newOrigin("no-such-app")
 	if !o.IsZero() {
 		t.Errorf("newOrigin with unknown slug should return zero Origin, got %+v", o)
+	}
+}
+
+// AncestorPIDs is read on Linux by internal/jump to decide which terminal
+// window owns a session, so the chain's shape is the contract: this process
+// first, its parent next, nothing at or below init.
+//
+// os.Getpid() is used deliberately — a live process with a known parent is the
+// only input whose ancestry the test can assert against.
+func TestAncestorPIDs(t *testing.T) {
+	for _, pid := range []int{0, -1} {
+		if got := AncestorPIDs(pid); got != nil {
+			t.Errorf("AncestorPIDs(%d) = %v, want nil", pid, got)
+		}
+	}
+
+	self, parent := os.Getpid(), os.Getppid()
+	chain := AncestorPIDs(self)
+	if len(chain) == 0 {
+		t.Fatalf("AncestorPIDs(%d) returned nothing for a running process", self)
+	}
+	if chain[0] != self {
+		t.Errorf("chain[0] = %d, want this process (%d)", chain[0], self)
+	}
+	if len(chain) > 1 && chain[1] != parent {
+		t.Errorf("chain[1] = %d, want this process's parent (%d)", chain[1], parent)
+	}
+	for i, pid := range chain {
+		if pid <= 1 {
+			t.Errorf("chain[%d] = %d, want a pid above init", i, pid)
+		}
 	}
 }

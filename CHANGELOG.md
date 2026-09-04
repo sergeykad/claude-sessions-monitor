@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - The API quota falls back to Oh My Pi's Anthropic credential when Claude Code's has expired. Claude Code only refreshes its token while it is running, so a day without it left the quota panel showing a 401; omp holds a credential for the same account and refreshes it on read. The panel names the credential it asked with
+- `make deadcode` and a CI step running `golang.org/x/tools/cmd/deadcode` once per `GOOS`. It reports an exported function that nothing reaches, which golangci-lint's `unused` does not
 
 ### Changed
 

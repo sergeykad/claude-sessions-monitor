@@ -45,6 +45,12 @@ the other platform's files unchecked. The pinned version is built with Go
 1.26, so the first run installs that toolchain; `GOTOOLCHAIN=local` blocks
 the install.
 
+`make deadcode` runs `golang.org/x/tools/cmd/deadcode` once per `GOOS`, for what
+golangci-lint cannot see: an exported function that no caller reaches. It walks
+the call graph from `main`, and `-test` counts a function a test reaches as
+live. It prints its findings and exits 0 either way, so the Makefile turns any
+output into a failure.
+
 The config carries no baseline, so `main` is expected to report zero findings.
 A finding that is correct as written gets a `//nolint:<linter>` with the reason
 at the site, not an entry in an ignore list.

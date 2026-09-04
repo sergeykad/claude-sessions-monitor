@@ -68,6 +68,13 @@ jobs:
           GOOS: darwin
           GOARCH: arm64
 
+      # golangci-lint's unused reads only the files one pass compiles, and never
+      # reports an exported name. deadcode walks the call graph from main, so it
+      # sees an exported function that no caller reaches. Run through make so
+      # the version and the flags cannot drift from the local gate.
+      - name: Dead code
+        run: make deadcode
+
       - name: Build
         run: go build ./...
 

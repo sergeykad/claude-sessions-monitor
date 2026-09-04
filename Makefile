@@ -64,7 +64,7 @@ deadcode:
 		go install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
 	@found=$$({ GOOS=linux GOARCH=amd64 $(DEADCODE) -test ./... || echo "deadcode failed for GOOS=linux (see above)"; \
 	            GOOS=darwin GOARCH=arm64 $(DEADCODE) -test ./... || echo "deadcode failed for GOOS=darwin (see above)"; } | sort -u); \
-		[ -z "$$found" ] || { echo "$$found"; echo "Unreachable: delete it, or call it."; exit 1; }
+		[ -z "$$found" ] || { echo "$$found"; echo "Delete the unreachable function, call it, or fix the run that failed."; exit 1; }
 
 # Everything CI enforces, runnable locally before pushing
 check:

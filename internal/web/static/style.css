@@ -114,23 +114,59 @@ nav {
     letter-spacing: 0.05em;
 }
 
-.header-quota-bar {
-    width: 56px;
-    height: 5px;
+/* Every meter in the dashboard is the same track: a rounded well with a fill
+   clipped to it. A variant below sets only its own size; the radius follows the
+   height, and each fill inherits the radius of the track it sits in. */
+.header-quota-bar,
+.usage-bar,
+.share-bar,
+.context-bar,
+.meter-track,
+.tool-bar {
+    height: 6px;
     background: var(--bg-hover);
     border-radius: 3px;
     overflow: hidden;
 }
 
-.header-quota-fill {
+.header-quota-fill,
+.usage-bar-fill,
+.share-bar-fill,
+.context-fill,
+.meter-fill,
+.tool-bar-fill {
     display: block;
     height: 100%;
-    border-radius: 3px;
+    border-radius: inherit;
 }
 
-.header-quota-fill.low { background: var(--green); }
-.header-quota-fill.medium { background: var(--yellow); }
-.header-quota-fill.high { background: var(--red); }
+/* The three that animate. `0.3s` and `0.3s ease` are the same declaration;
+   the fills that never re-render without a full rebuild have neither. */
+.usage-bar-fill,
+.context-fill,
+.meter-fill {
+    transition: width 0.3s;
+}
+
+.header-quota-bar {
+    width: 56px;
+    height: 5px;
+}
+
+.header-quota-fill.low,
+.usage-bar-fill.low,
+.context-fill.low,
+.meter-fill.ok { background: var(--green); }
+
+.header-quota-fill.medium,
+.usage-bar-fill.medium,
+.context-fill.medium,
+.meter-fill.warning { background: var(--yellow); }
+
+.header-quota-fill.high,
+.usage-bar-fill.high,
+.context-fill.high,
+.meter-fill.danger { background: var(--red); }
 
 .header-quota-pct {
     color: var(--text-muted);
@@ -279,22 +315,9 @@ nav {
 .usage-bar {
     width: 320px;
     height: 10px;
-    background: var(--bg-hover);
     border-radius: 5px;
-    overflow: hidden;
     flex-shrink: 0;
 }
-
-.usage-bar-fill {
-    display: block;
-    height: 100%;
-    border-radius: 5px;
-    transition: width 0.3s;
-}
-
-.usage-bar-fill.low { background: var(--green); }
-.usage-bar-fill.medium { background: var(--yellow); }
-.usage-bar-fill.high { background: var(--red); }
 
 .usage-bar-pct {
     width: 3rem;
@@ -427,17 +450,10 @@ nav {
 
 .share-bar {
     flex: 1;
-    height: 6px;
-    background: var(--bg-hover);
-    border-radius: 3px;
-    overflow: hidden;
 }
 
 .share-bar-fill {
-    display: block;
-    height: 100%;
     background: var(--blue);
-    border-radius: 3px;
 }
 
 .share-pct {
@@ -686,22 +702,7 @@ main {
 
 .context-bar {
     width: 64px;
-    height: 6px;
-    background: var(--bg-hover);
-    border-radius: 3px;
-    overflow: hidden;
 }
-
-.context-fill {
-    display: block;
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.3s;
-}
-
-.context-fill.low { background: var(--green); }
-.context-fill.medium { background: var(--yellow); }
-.context-fill.high { background: var(--red); }
 
 .session-activity {
     color: var(--text-dim);
@@ -1241,21 +1242,9 @@ main {
    whole bar and not only across the filled part. */
 .meter-track {
     height: 8px;
-    background: var(--bg-hover);
     border-radius: 4px;
-    overflow: hidden;
     margin-bottom: 0.625rem;
 }
-
-.meter-fill {
-    height: 100%;
-    border-radius: 4px;
-    transition: width 0.3s ease;
-}
-
-.meter-fill.ok { background: var(--green); }
-.meter-fill.warning { background: var(--yellow); }
-.meter-fill.danger { background: var(--red); }
 
 .lead-support {
     display: flex;
@@ -1387,17 +1376,10 @@ main {
 
 .tool-bar {
     min-width: 2rem;
-    height: 6px;
-    background: var(--bg-hover);
-    border-radius: 3px;
-    overflow: hidden;
 }
 
 .tool-bar-fill {
-    display: block;
-    height: 100%;
     background: var(--blue);
-    border-radius: 3px;
 }
 
 .tool-count {

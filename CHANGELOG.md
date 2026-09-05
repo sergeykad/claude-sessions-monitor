@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Jumping to a session works on Linux: `Enter` focuses the session's window under Hyprland, sway, or any X11 window manager with `wmctrl` installed. Matching is by process ownership, which is exact where the terminal runs one process per window
+- Jumping to a session works on Linux under Hyprland, sway, and X11 window managers (X11 needs `wmctrl`, which is not installed by default). `Enter` raises the session's window, not its tab. GNOME and KDE under Wayland are not supported, and say so instead of doing nothing
 - `install.sh`, a one-line installer (`curl -fsSL .../install.sh | sh`) that detects OS/arch, verifies the download, and installs to `~/.local/bin` without sudo
 - `csm -upgrade` replaces a directly-installed csm in place; installs owned by Homebrew, mise, dpkg, rpm, pacman or `go install` get that tool's upgrade command instead
 - The live dashboard checks for a newer release once a day in the background; set `CSM_NO_UPDATE_CHECK` to disable

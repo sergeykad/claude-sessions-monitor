@@ -44,9 +44,11 @@ func detectBackend() (backend, error) {
 		return needsTool(sway{}, "swaymsg")
 	case os.Getenv("WAYLAND_DISPLAY") != "":
 		// Wayland gives no protocol for one client to focus another's window;
-		// each compositor exposes its own or none at all. GNOME and KDE are
-		// the common cases with none.
-		return nil, unsupportedf("jumping needs a compositor csm can drive — Hyprland and sway are supported, this one (%s) has no way for csm to focus a window",
+		// each compositor exposes its own or none at all. GNOME has none
+		// short of a shell extension. KWin has a scripting interface
+		// (org.kde.KWin /Scripting) that could do it, which csm does not
+		// drive yet.
+		return nil, unsupportedf("jumping on Wayland works under Hyprland and sway only, not %s",
 			desktopName())
 	case os.Getenv("DISPLAY") != "":
 		return needsTool(x11{}, "wmctrl")

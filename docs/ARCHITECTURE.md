@@ -544,11 +544,11 @@ on, so a session in a background tab gets its window raised and no more.
 `backend_linux.go` holds one `backend` per display server — Hyprland
 (`hyprctl`), sway (`swaymsg`), X11 (`wmctrl`) — chosen by environment variable
 rather than by which tools are installed, so a missing tool is reported as a
-missing tool. GNOME and KDE on Wayland have no way for one client to focus
-another's window; they get a sentence saying so. Every call is bounded at 3s:
-these are local IPC round-trips, and unlike macOS there is no consent dialog to
-wait on. `run` returns stdout *even on failure*, because hyprctl reports what
-went wrong there rather than on stderr.
+missing tool. GNOME and KDE on Wayland are unsupported and get a sentence
+saying so; the comment at that branch says what each of them lacks. Every call
+is bounded at 3s: these are local IPC round-trips, and unlike macOS there is no
+consent dialog to wait on. `run` returns stdout *even on failure*, because
+hyprctl reports what went wrong there rather than on stderr.
 
 Hyprland is asked twice. 0.56 replaced dispatch arguments with a Lua API
 (`hl.dsp.focus{window="address:0x…"}`), and the old `focuswindow address:0x…`

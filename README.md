@@ -231,8 +231,10 @@ ownership alone:
 ghostty --gtk-single-instance=false
 ```
 
-On GNOME and KDE under Wayland there is no way for one application to focus another's
-window at all, so jumping reports that rather than failing obscurely.
+GNOME and KDE under Wayland are not supported, and jumping says so rather than failing
+obscurely. Wayland has no protocol for one application to focus another's window. GNOME
+offers no replacement short of a shell extension; KWin has a scripting interface that
+could do it, which csm does not drive yet.
 
 ### Watching both agents
 

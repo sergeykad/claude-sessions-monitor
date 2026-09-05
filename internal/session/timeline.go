@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -107,9 +106,7 @@ func parseTimelineInternal(logFile string, offset, limit int, entryType string) 
 	}
 	defer func() { _ = file.Close() }()
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner := newLogScanner(file, maxLogLineBytes)
 
 	var all []TimelineEntry
 	for scanner.Scan() {
@@ -172,9 +169,7 @@ func parseMetricsInternal(logFile string) (*SessionMetrics, error) {
 		ToolUsageCounts: make(map[string]int),
 	}
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner := newLogScanner(file, maxLogLineBytes)
 
 	var lastUsage *Usage
 	var lastUsageModel string
@@ -248,12 +243,7 @@ func parseMetricsInternal(logFile string) (*SessionMetrics, error) {
 	}
 
 	// Calculate context usage from the last usage entry
-	if lastUsage != nil {
-		totalTokens := lastUsage.InputTokens + lastUsage.CacheCreationInputTokens + lastUsage.CacheReadInputTokens + lastUsage.OutputTokens
-		m.ContextTokens = totalTokens
-		window := contextWindowForModel(lastUsageModel)
-		m.ContextPercent = float64(totalTokens) / float64(window) * 100
-	}
+	m.ContextPercent, m.ContextTokens = contextUsage(lastUsage, lastUsageModel)
 
 	return m, nil
 }

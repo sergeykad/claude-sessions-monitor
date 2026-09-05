@@ -103,14 +103,23 @@
         headerQuotaEl.innerHTML = html;
     }
 
-    function renderHeaderQuotaBar(shortLabel, fullLabel, bucket, source) {
+    // The header chip and the usage row must agree on how full a bucket is and
+    // when it lifts, so both read it from here rather than each doing the math.
+    function quotaBarParts(bucket) {
         const pct = Math.min(bucket.utilization || 0, 100);
         const cls = pct >= 90 ? 'high' : pct >= 75 ? 'medium' : 'low';
-        let title = `${fullLabel} quota: ${Math.round(pct)}%`;
+        let resetsIn = '';
         if (bucket.resets_at) {
             const remaining = new Date(bucket.resets_at) - Date.now();
-            if (remaining > 0) title += `, resets in ${formatDurationHuman(remaining * 1e6)}`;
+            if (remaining > 0) resetsIn = formatDurationHuman(remaining * 1e6);
         }
+        return { pct, cls, resetsIn };
+    }
+
+    function renderHeaderQuotaBar(shortLabel, fullLabel, bucket, source) {
+        const { pct, cls, resetsIn } = quotaBarParts(bucket);
+        let title = `${fullLabel} quota: ${Math.round(pct)}%`;
+        if (resetsIn) title += `, resets in ${resetsIn}`;
         // Whose token these numbers came from. The header has no room to say it
         // outright, and the usage tab does, but a chip that cannot be traced at
         // all is worse than one that needs hovering.
@@ -342,29 +351,29 @@
                 ${renderSubagents(s.subagents)}
             </div>`;
         }).join('');
-
-        // Attach click handlers
-        sessionsList.querySelectorAll('.session-card').forEach(card => {
-            card.addEventListener('click', (e) => {
-                // If the history link was clicked, navigate to history instead
-                if (e.target.classList.contains('session-history-link')) {
-                    e.preventDefault();
-                    const project = card.dataset.project;
-                    showProjectHistory(project);
-                    return;
-                }
-                // A click on a nested subagent opens that agent's log, not the parent's
-                const subagent = e.target.closest('.subagent');
-                if (subagent && subagent.dataset.logfile) {
-                    openDetail(subagent.dataset.logfile, subagent.dataset.label);
-                    return;
-                }
-                const logFile = card.dataset.logfile;
-                const project = card.querySelector('.session-project').textContent;
-                if (logFile) openDetail(logFile, project);
-            });
-        });
     }
+
+    // One listener on the container, bound once, rather than one per card on
+    // every frame: the card list is rebuilt from scratch every two seconds, so
+    // per-card binding re-walks and re-binds the whole list that often.
+    sessionsList.addEventListener('click', (e) => {
+        const card = e.target.closest('.session-card');
+        if (!card) return;
+        // If the history link was clicked, navigate to history instead
+        if (e.target.classList.contains('session-history-link')) {
+            e.preventDefault();
+            showProjectHistory(card.dataset.project);
+            return;
+        }
+        // A click on a nested subagent opens that agent's log, not the parent's
+        const subagent = e.target.closest('.subagent');
+        if (subagent && subagent.dataset.logfile) {
+            openDetail(subagent.dataset.logfile, subagent.dataset.label);
+            return;
+        }
+        const logFile = card.dataset.logfile;
+        if (logFile) openDetail(logFile, card.querySelector('.session-project').textContent);
+    });
 
     // Render a session's live subagents as rows nested under its card.
     // Only running agents reach here — the backend drops finished ones.
@@ -621,15 +630,10 @@
     }
 
     function renderUsageBar(label, bucket) {
-        const pct = Math.min(bucket.utilization || 0, 100);
-        const cls = pct >= 90 ? 'high' : pct >= 75 ? 'medium' : 'low';
-        let resetHtml = '';
-        if (bucket.resets_at) {
-            const remaining = new Date(bucket.resets_at) - Date.now();
-            if (remaining > 0) {
-                resetHtml = `<span class="usage-bar-reset">resets in ${formatDurationHuman(remaining * 1e6)}</span>`;
-            }
-        }
+        const { pct, cls, resetsIn } = quotaBarParts(bucket);
+        const resetHtml = resetsIn
+            ? `<span class="usage-bar-reset">resets in ${esc(resetsIn)}</span>`
+            : '';
         return `<div class="usage-bar-row">
             <span class="usage-bar-label">${esc(label)}</span>
             <span class="usage-bar"><span class="usage-bar-fill ${cls}" style="width:${pct}%"></span></span>
@@ -1109,6 +1113,4 @@
         return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    // Mirrors session.contextWindowForModel in Go: opus/sonnet from generation 4.6
-    // onward use the 1M extended context window.
 })();

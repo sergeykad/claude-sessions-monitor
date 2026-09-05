@@ -260,3 +260,66 @@ func TestApplyParsedLog_StatusRecomputedOverTime(t *testing.T) {
 		t.Errorf("stale: status = %q, want %q", stale.Status, StatusWaiting)
 	}
 }
+
+// The quota and status endpoints rate-limit hard, so the TTL is the only thing
+// standing between a dashboard left open all day and a 429. Nothing exercised
+// this policy: both callers reach it through a network fetch a test cannot run.
+func TestTTLCacheServesOneFetchForTheWholeTTL(t *testing.T) {
+	calls := 0
+	fetch := func() *int {
+		calls++
+		v := calls
+		return &v
+	}
+
+	c := ttlCache[int]{ttl: time.Hour}
+	first := c.get(fetch)
+	second := c.get(fetch)
+
+	if calls != 1 {
+		t.Fatalf("fetch ran %d times inside one TTL, want 1: the endpoint is asked again on every poll", calls)
+	}
+	if first != second {
+		t.Error("a second call returned a different value inside the TTL")
+	}
+}
+
+// A value older than the TTL must be refetched, or the panel shows a quota that
+// stopped moving hours ago.
+func TestTTLCacheRefetchesOnceTheValueHasAgedOut(t *testing.T) {
+	calls := 0
+	fetch := func() *int {
+		calls++
+		v := calls
+		return &v
+	}
+
+	c := ttlCache[int]{ttl: time.Minute}
+	c.get(fetch)
+	c.fetchedAt = time.Now().Add(-2 * time.Minute)
+	got := c.get(fetch)
+
+	if calls != 2 {
+		t.Fatalf("fetch ran %d times, want 2: a stale value was served past its TTL", calls)
+	}
+	if got == nil || *got != 2 {
+		t.Error("the refetched value was not the one returned")
+	}
+}
+
+// get caches on a non-nil result, so a fetcher that returns nil is called every
+// time. Both real fetchers return a value carrying the failure instead, which is
+// what makes a failed call count against the TTL. This pins the contract the
+// doc comment states.
+func TestTTLCacheDoesNotCacheANilFetch(t *testing.T) {
+	calls := 0
+	c := ttlCache[int]{ttl: time.Hour}
+
+	for range 2 {
+		c.get(func() *int { calls++; return nil })
+	}
+
+	if calls != 2 {
+		t.Errorf("fetch ran %d times, want 2: a nil result must not be mistaken for a cached value", calls)
+	}
+}

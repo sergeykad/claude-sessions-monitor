@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -154,14 +152,9 @@ func ComputeUsage() *UsageStats {
 	}
 }
 
-// apiQuotaCache holds a cached API quota response with a TTL.
-var apiQuotaCache struct {
-	sync.Mutex
-	result    *APIQuota
-	fetchedAt time.Time
-}
-
-const apiQuotaCacheTTL = 60 * time.Second
+// apiQuotaCache holds a cached API quota response. The endpoint rate-limits
+// hard, so the TTL is what keeps a dashboard open all day from earning a 429.
+var apiQuotaCache = ttlCache[APIQuota]{ttl: 60 * time.Second}
 
 // version identifies this build in outgoing requests. Set from main's version
 // variable via SetVersion at startup; the default matches main's own so a
@@ -183,20 +176,9 @@ func userAgent() string {
 }
 
 // FetchAPIQuota queries the Anthropic usage API for real quota utilization.
-// Results are cached for 60 seconds to avoid excessive API calls.
+// Results are cached; the TTL is on apiQuotaCache.
 func FetchAPIQuota() *APIQuota {
-	apiQuotaCache.Lock()
-	defer apiQuotaCache.Unlock()
-
-	// Return cached result if fresh
-	if apiQuotaCache.result != nil && time.Since(apiQuotaCache.fetchedAt) < apiQuotaCacheTTL {
-		return apiQuotaCache.result
-	}
-
-	result := fetchAPIQuotaUncached()
-	apiQuotaCache.result = result
-	apiQuotaCache.fetchedAt = time.Now()
-	return result
+	return apiQuotaCache.get(fetchAPIQuotaUncached)
 }
 
 func fetchAPIQuotaUncached() *APIQuota {
@@ -275,27 +257,37 @@ func reasonForStatus(code int) string {
 	}
 }
 
+// rawQuotaBucket is the wire shape every quota bucket arrives in. The four
+// buckets share it so they decode the same fields; toQuotaBucket owns the
+// reset-time rule.
+type rawQuotaBucket struct {
+	Utilization float64 `json:"utilization"`
+	ResetsAt    string  `json:"resets_at"`
+}
+
+// toQuotaBucket converts a decoded bucket. A reset time the API sent in a form
+// time.Parse rejects is dropped rather than failing the bucket: the utilization
+// is still worth showing.
+func toQuotaBucket(raw *rawQuotaBucket) *QuotaBucket {
+	if raw == nil {
+		return nil
+	}
+	bucket := &QuotaBucket{Utilization: raw.Utilization}
+	if t, err := time.Parse(time.RFC3339, raw.ResetsAt); err == nil {
+		bucket.ResetsAt = &t
+	}
+	return bucket
+}
+
 // parseAPIQuotaResponse parses the JSON response from the Anthropic usage API.
 func parseAPIQuotaResponse(body []byte) *APIQuota {
 	// The API response structure
 	var raw struct {
-		FiveHour *struct {
-			Utilization float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		} `json:"five_hour"`
-		SevenDay *struct {
-			Utilization float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		} `json:"seven_day"`
-		SevenDaySonnet *struct {
-			Utilization float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		} `json:"seven_day_sonnet"`
-		SevenDayOpus *struct {
-			Utilization float64 `json:"utilization"`
-			ResetsAt    string  `json:"resets_at"`
-		} `json:"seven_day_opus"`
-		ExtraUsage *struct {
+		FiveHour       *rawQuotaBucket `json:"five_hour"`
+		SevenDay       *rawQuotaBucket `json:"seven_day"`
+		SevenDaySonnet *rawQuotaBucket `json:"seven_day_sonnet"`
+		SevenDayOpus   *rawQuotaBucket `json:"seven_day_opus"`
+		ExtraUsage     *struct {
 			IsEnabled bool `json:"is_enabled"`
 		} `json:"extra_usage"`
 	}
@@ -304,38 +296,12 @@ func parseAPIQuotaResponse(body []byte) *APIQuota {
 		return &APIQuota{Available: false, Error: "failed to parse API response", Reason: reasonParse}
 	}
 
-	result := &APIQuota{Available: true}
-
-	if raw.FiveHour != nil {
-		bucket := &QuotaBucket{Utilization: raw.FiveHour.Utilization}
-		if t, err := time.Parse(time.RFC3339, raw.FiveHour.ResetsAt); err == nil {
-			bucket.ResetsAt = &t
-		}
-		result.FiveHour = bucket
-	}
-
-	if raw.SevenDay != nil {
-		bucket := &QuotaBucket{Utilization: raw.SevenDay.Utilization}
-		if t, err := time.Parse(time.RFC3339, raw.SevenDay.ResetsAt); err == nil {
-			bucket.ResetsAt = &t
-		}
-		result.SevenDay = bucket
-	}
-
-	if raw.SevenDaySonnet != nil {
-		bucket := &QuotaBucket{Utilization: raw.SevenDaySonnet.Utilization}
-		if t, err := time.Parse(time.RFC3339, raw.SevenDaySonnet.ResetsAt); err == nil {
-			bucket.ResetsAt = &t
-		}
-		result.SevenDaySonnet = bucket
-	}
-
-	if raw.SevenDayOpus != nil {
-		bucket := &QuotaBucket{Utilization: raw.SevenDayOpus.Utilization}
-		if t, err := time.Parse(time.RFC3339, raw.SevenDayOpus.ResetsAt); err == nil {
-			bucket.ResetsAt = &t
-		}
-		result.SevenDayOpus = bucket
+	result := &APIQuota{
+		Available:      true,
+		FiveHour:       toQuotaBucket(raw.FiveHour),
+		SevenDay:       toQuotaBucket(raw.SevenDay),
+		SevenDaySonnet: toQuotaBucket(raw.SevenDaySonnet),
+		SevenDayOpus:   toQuotaBucket(raw.SevenDayOpus),
 	}
 
 	if raw.ExtraUsage != nil {
@@ -354,9 +320,7 @@ func scanLogTokens(logFile string, windowStart time.Time) (input, output, cache 
 	}
 	defer func() { _ = file.Close() }()
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner := newLogScanner(file, maxLogLineBytes)
 
 	for scanner.Scan() {
 		line := scanner.Text()

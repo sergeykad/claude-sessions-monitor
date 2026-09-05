@@ -537,3 +537,43 @@ func TestDiscoverReportsOMPSessionsWithoutClaudeDirectory(t *testing.T) {
 		t.Errorf("Harness = %q, want %q", got[0].Harness, HarnessOMP)
 	}
 }
+
+// A log longer than keep is trimmed to its newest entries, and the entries that
+// survive must arrive decoded. Decoding runs after the trim, so a slice that
+// went off by one, or a decode applied to the pre-trim slice, would leave the
+// kept entries holding raw payloads: the status rules read those, and an omp
+// session would show the wrong task text. No other omp test is long enough to
+// reach the trim at all.
+func TestParseOMPLogKeepsTheNewestEntriesDecoded(t *testing.T) {
+	resetParseCache()
+	dir := t.TempDir()
+	log := ompLog(t, dir, "2026-08-29T07-16-43-905Z_01a04c60.jsonl",
+		toolStart(ts(-5*time.Minute), "call-old", "bash", "Stale intent"),
+		toolStart(ts(-4*time.Minute), "call-old2", "bash", "Also stale"),
+		toolStart(ts(-3*time.Minute), "call-old3", "bash", "Still stale"),
+		assistant(ts(-2*time.Minute), "stop", "Older reply"),
+		toolStart(ts(-1*time.Minute), "call-new", "grep", "Searching for callers"),
+	)
+
+	pl, err := parseOMPLogFile(log, 2)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(pl.entries) != 2 {
+		t.Fatalf("kept %d entries, want 2", len(pl.entries))
+	}
+	// The two newest, in order: the assistant reply then the tool call.
+	if pl.entries[0].Message == nil || pl.entries[0].Message.Text != "Older reply" {
+		t.Errorf("first kept entry is not the newest assistant message; the trim kept the wrong end")
+	}
+	last := pl.entries[1]
+	if last.toolStart == nil || last.toolStart.Intent != "Searching for callers" {
+		t.Errorf("the newest tool call reached the status rules undecoded; its intent is what the dashboard shows as the task")
+	}
+	// decodeOMPEntry clears the raw payload once it has read it. A kept entry
+	// holding one means it was never decoded.
+	if len(last.Data) != 0 {
+		t.Errorf("raw payload survived on a kept entry: %s", last.Data)
+	}
+}

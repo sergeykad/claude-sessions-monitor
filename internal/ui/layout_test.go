@@ -1,6 +1,9 @@
 package ui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCalcSessionLayout_WideTerminal(t *testing.T) {
 	l := calcSessionLayout(140, false)
@@ -120,5 +123,24 @@ func TestCalcHistoryLayout_NarrowTerminal(t *testing.T) {
 	expected := l.project + l.branch + l.startTime + l.duration + l.msgs + 4
 	if l.totalWidth != expected {
 		t.Errorf("expected totalWidth=%d, got %d", expected, l.totalWidth)
+	}
+}
+
+// A title longer than the terminal is wide leaves no room for the trailing run.
+// strings.Repeat panics on a negative count, and this divider is drawn by the
+// history and usage views, so an unclamped width would take the whole TUI down
+// on a narrow terminal rather than just drawing an ugly line.
+func TestSectionRuleSurvivesATerminalNarrowerThanItsTitle(t *testing.T) {
+	for _, width := range []int{0, 1, 5, 12} {
+		var buf strings.Builder
+		sectionRule(&buf, "Local Usage (5h window, Claude Code)", width, "\n")
+
+		got := stripANSI(buf.String())
+		if !strings.Contains(got, "Local Usage") {
+			t.Errorf("width %d: the title was lost from %q", width, got)
+		}
+		if !strings.HasSuffix(got, "━\n") {
+			t.Errorf("width %d: no trailing rule drawn: %q", width, got)
+		}
 	}
 }

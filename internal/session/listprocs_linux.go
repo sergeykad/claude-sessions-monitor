@@ -83,7 +83,9 @@ func processArgv(pid int) ([]string, error) {
 // paren. Splitting the line on whitespace, or cutting at the first ")", shifts
 // every field after it and the parent pid then reads as some other number. That
 // parent pid is the orphan signal, so a shift marks every session a ghost or
-// none of them. Cutting at the last ")" is what keeps the fields lined up.
+// none of them. Origin detection shares this parser, so a shift also breaks the
+// ancestor walk that names where a session was launched from. Cutting at the
+// last ")" is what keeps the fields lined up.
 func parseProcStat(data []byte) (comm string, ppid int, err error) {
 	start := bytes.IndexByte(data, '(')
 	end := bytes.LastIndexByte(data, ')')

@@ -103,21 +103,33 @@ func (h *SSEHub) Run(ctx context.Context, fatal chan<- error) {
 				h.broadcast(formatSSE("scan_error", []byte(`{"message":"session scan failed"}`)))
 				continue
 			}
-			if frame := harnessEvent(allSessions); frame != nil {
-				h.broadcast(frame)
+			harness, rows, err := sessionFrames(allSessions)
+			if harness != nil {
+				h.broadcast(harness)
 			}
-
-			live := filterLiveSessions(allSessions)
-			data, err := json.Marshal(live)
 			if err != nil {
 				continue
 			}
-			h.broadcast(formatSSE("sessions", data))
+			h.broadcast(rows)
 
 		case <-heartbeat.C:
 			h.broadcast(formatSSE("heartbeat", []byte("{}")))
 		}
 	}
+}
+
+// sessionFrames builds the pair of frames a session update is made of, in the
+// order they must be sent: the badge decision, then the rows it applies to.
+// Returning them together keeps the two senders from building the frames
+// differently. Each sender still writes the harness frame first.
+// A harness frame that fails to marshal comes back nil and is skipped.
+func sessionFrames(all []session.Session) (harness, sessions []byte, err error) {
+	harness = harnessEvent(all)
+	data, err := json.Marshal(filterLiveSessions(all))
+	if err != nil {
+		return harness, nil, err
+	}
+	return harness, formatSSE("sessions", data), nil
 }
 
 // harnessEvent renders the badge decision for these sessions as an SSE frame,
@@ -206,17 +218,16 @@ func (h *SSEHub) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// until the next broadcast two seconds later.
 	allSessions, err := discoverSessions()
 	if err == nil {
-		if frame := harnessEvent(allSessions); frame != nil {
-			_, _ = w.Write(frame)
+		harness, rows, err := sessionFrames(allSessions)
+		if harness != nil {
+			_, _ = w.Write(harness)
 		}
-		live := filterLiveSessions(allSessions)
-		data, err := json.Marshal(live)
 		if err == nil {
 			// A failed write means the client is already gone. Returning here
 			// would leave it registered with the hub, because the unregister
 			// defer is not set until below; the r.Context().Done() case takes
 			// it off moments later.
-			_, _ = w.Write(formatSSE("sessions", data))
+			_, _ = w.Write(rows)
 		}
 		flusher.Flush()
 	}

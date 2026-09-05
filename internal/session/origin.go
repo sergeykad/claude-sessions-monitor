@@ -64,9 +64,9 @@ func newOrigin(app string) Origin {
 
 // ProcessInfo describes one process in the ancestor chain.
 // On Darwin, Exe holds whatever `ps -o comm=` returned (often the full
-// "/Applications/Ghostty.app/Contents/MacOS/ghostty" path). On Linux it's
-// the resolved /proc/<pid>/exe target, falling back to /proc/<pid>/comm
-// when exe is not readable.
+// "/Applications/Ghostty.app/Contents/MacOS/ghostty" path). On Linux it is the
+// resolved <procRoot>/<pid>/exe target, and empty when that link is not
+// readable; Comm then carries the name read from the stat file.
 type ProcessInfo struct {
 	PID  int
 	Comm string // short command name (max 15 chars on Linux)
@@ -281,4 +281,22 @@ func ancestorMatches(p ProcessInfo, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+// resolveOrigin returns where a session was launched from (terminal / IDE /
+// Claude Desktop). A past session can only be classified if it was detected and
+// cached while it was still live, so the cache is consulted first and detection
+// runs only for a running process with no entry yet. Both producers resolve the
+// origin the same way, so the policy lives here rather than in each of them.
+func resolveOrigin(sessionID string, isRunning bool, pid int) Origin {
+	if cached, ok := LoadOrigin(sessionID); ok {
+		return cached
+	}
+	if isRunning && pid > 0 {
+		if detected := DetectOrigin(pid); !detected.IsZero() {
+			_ = SaveOrigin(sessionID, detected)
+			return detected
+		}
+	}
+	return Origin{}
 }

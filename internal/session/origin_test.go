@@ -206,8 +206,10 @@ func TestNewOriginUnknownSlug(t *testing.T) {
 // window owns a session, so the chain's shape is the contract: this process
 // first, its parent next, nothing at or below init.
 //
-// os.Getpid() is used deliberately — a live process with a known parent is the
-// only input whose ancestry the test can assert against.
+// os.Getpid() is used deliberately: a live process with a known parent is the
+// only input whose ancestry the test can assert against on macOS, where the
+// chain comes from `ps`. The Linux walk reads through procRoot and is covered
+// from a fixture in origin_detect_linux_test.go.
 func TestAncestorPIDs(t *testing.T) {
 	for _, pid := range []int{0, -1} {
 		if got := AncestorPIDs(pid); got != nil {

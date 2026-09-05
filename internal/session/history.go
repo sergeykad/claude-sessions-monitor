@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -129,32 +128,22 @@ func DiscoverHistory(days int) ([]HistorySession, error) {
 		projectDir := filepath.Join(projectsDir, dir.Name())
 		projectName := decodeProjectName(dir.Name())
 
-		files, err := os.ReadDir(projectDir)
+		// Which files in a project directory are session logs is one rule, and
+		// listLogsByRecency is where it lives -- including the agent- skip, which
+		// a second spelling here could quietly stop matching.
+		logs, err := listLogsByRecency(projectDir)
 		if err != nil {
 			continue
 		}
 
-		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
-				continue
-			}
-			// Skip agent/sidechain files
-			if strings.HasPrefix(f.Name(), "agent-") {
-				continue
-			}
-
-			logFile := filepath.Join(projectDir, f.Name())
-			if seen[logFile] {
-				continue
-			}
-
-			info, err := f.Info()
-			if err != nil || info.Size() == 0 {
+		for _, candidate := range logs {
+			logFile := candidate.path
+			if seen[logFile] || candidate.size == 0 {
 				continue
 			}
 
 			// Use file modification time for quick cutoff check before parsing
-			if info.ModTime().Before(cutoff) {
+			if candidate.modTime.Before(cutoff) {
 				continue
 			}
 
@@ -167,10 +156,10 @@ func DiscoverHistory(days int) ([]HistorySession, error) {
 				degraded = statsErr.Error()
 			}
 			if st.StartTime.IsZero() {
-				st.StartTime = info.ModTime()
+				st.StartTime = candidate.modTime
 			}
 			if st.EndTime.IsZero() {
-				st.EndTime = info.ModTime()
+				st.EndTime = candidate.modTime
 			}
 
 			// Re-check cutoff against actual start time
@@ -282,9 +271,7 @@ func QuickSessionStats(logFile string) (stats SessionStats, err error) {
 	}
 	defer func() { _ = file.Close() }()
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner := newLogScanner(file, maxLogLineBytes)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -484,17 +471,7 @@ func truncateString(s string, maxLen int) string {
 // extractTimestampFromLine extracts a timestamp from a JSONL line using fast
 // string matching rather than full JSON parsing.
 func extractTimestampFromLine(line string) time.Time {
-	const prefix = `"timestamp":"`
-	idx := strings.Index(line, prefix)
-	if idx < 0 {
-		return time.Time{}
-	}
-	start := idx + len(prefix)
-	end := strings.IndexByte(line[start:], '"')
-	if end < 0 {
-		return time.Time{}
-	}
-	ts, err := time.Parse(time.RFC3339Nano, line[start:start+end])
+	ts, err := time.Parse(time.RFC3339Nano, extractStringField(line, `"timestamp":"`))
 	if err != nil {
 		return time.Time{}
 	}

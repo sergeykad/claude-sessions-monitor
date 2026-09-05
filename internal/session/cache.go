@@ -216,3 +216,42 @@ func storeResult(sessions []Session) {
 	resultAt = time.Now()
 	resultMu.Unlock()
 }
+
+// ttlCache holds one value fetched from the network, reused until it ages past
+// ttl. The quota and status endpoints both want exactly this; it is the shared
+// policy behind apiQuotaCache and claudeStatusCache, which live beside the
+// endpoints they call.
+//
+// ttl must be greater than 0. The zero value never reports a hit, which for a
+// network cache means every call fetches.
+//
+// The fetch runs under the lock, so a second caller arriving mid-fetch waits
+// for the first result rather than starting a duplicate request. It also means
+// every caller blocks for as long as the fetch takes, so a fetch must bound its
+// own time (see the WaitDelay in runOMP).
+type ttlCache[T any] struct {
+	mu        sync.Mutex
+	ttl       time.Duration
+	result    *T
+	fetchedAt time.Time
+}
+
+// get returns the cached value, calling fetch when there is none or it has aged
+// out.
+//
+// fetch must return non-nil: a failure is a value with the failure recorded in
+// it, and is then cached like any other, so an endpoint that answered 429 is
+// not asked again until the TTL lapses. A nil return is not cached and is
+// retried on the next call.
+func (c *ttlCache[T]) get(fetch func() *T) *T {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.result != nil && time.Since(c.fetchedAt) < c.ttl {
+		return c.result
+	}
+
+	c.result = fetch()
+	c.fetchedAt = time.Now()
+	return c.result
+}

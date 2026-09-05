@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yepzdk/claude-sessions-monitor/internal/session"
 )
@@ -432,16 +433,7 @@ func formatElapsed(d time.Duration) string {
 	if d < time.Second {
 		return "just now"
 	}
-	if d < time.Minute {
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	}
-	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	return session.FormatAge(d) + " ago"
 }
 
 // truncate truncates a string to a maximum visible length (in runes, not bytes).
@@ -458,6 +450,30 @@ func truncate(s string, maxLen int) string {
 		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+// cutRunes cuts s to at most n runes with no ellipsis, for the fixed-width
+// cells where a "..." would cost more of the value than it explains. Runes, not
+// bytes: slicing by byte can split a multi-byte character in half and
+// mis-measures the padding.
+func cutRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
+// sectionRule writes a "━━━ Title ━━━━━" divider that fills the width. The
+// trailing run is what is left of width after the leading "━━━ ", the title and
+// one space, and never shrinks below one character on a narrow terminal. The
+// title is measured in bytes, which holds while every caller passes ASCII.
+func sectionRule(buf *strings.Builder, title string, width int, nl string) {
+	fill := width - 5 - len(title)
+	if fill < 1 {
+		fill = 1
+	}
+	fmt.Fprintf(buf, "%s━━━ %s %s%s%s", Dim, title, strings.Repeat("━", fill), Reset, nl)
 }
 
 // contextBarWidth is the number of block characters in the progress bar
@@ -504,7 +520,7 @@ func formatContext(s session.Session, width int) string {
 	// Append a marker when the active model uses an extended context window so
 	// users can tell at a glance that "24%" is of 1M, not 200K.
 	suffix := ""
-	if session.ContextWindowForModel(s.Model) > session.DefaultContextWindow {
+	if s.ContextWindow > session.DefaultContextWindow {
 		suffix = " (1M)"
 	}
 
@@ -553,13 +569,7 @@ func formatOrigin(s session.Session, width int, showHarness bool) string {
 	if text == "" {
 		text = "-"
 	}
-	// Runes, not bytes: slicing by byte can split a multi-byte character in
-	// half and mis-measures the padding.
-	runes := []rune(text)
-	if len(runes) > nameWidth {
-		runes = runes[:nameWidth]
-		text = string(runes)
-	}
+	text = cutRunes(text, nameWidth)
 
 	var color string
 	switch s.Origin.Category {
@@ -574,12 +584,12 @@ func formatOrigin(s session.Session, width int, showHarness bool) string {
 	}
 
 	cell := color + text + Reset
-	visible := len(runes)
+	visible := utf8.RuneCountInString(text)
 
 	if showHarness && s.Harness != "" {
 		badge := "[" + harnessLabel(s.Harness) + "]"
 		cell += " " + Dim + badge + Reset
-		visible += 1 + len([]rune(badge))
+		visible += 1 + utf8.RuneCountInString(badge)
 	}
 
 	if visible < width {
@@ -731,56 +741,44 @@ func formatProject(s session.Session, maxLen int, showHarness bool) string {
 	var suffixes []string
 	var suffixLens []int // visible length of each suffix (excluding space)
 
+	// add appends one badge, measuring the width from the text it is given so
+	// the two slices cannot fall out of step and no width is restated by hand.
+	add := func(color, text string) {
+		suffixes = append(suffixes, color+text+Reset)
+		suffixLens = append(suffixLens, utf8.RuneCountInString(text))
+	}
+
 	// Which agent this row belongs to, first so the width-shedding loop below
 	// drops it last: on a mixed dashboard, knowing which agent a row is matters
 	// more than its branch or title.
 	if showHarness && s.Harness != "" {
-		label := harnessLabel(s.Harness)
-		suffixes = append(suffixes, Dim+"["+label+"]"+Reset)
-		suffixLens = append(suffixLens, 2+len([]rune(label))) // [label]
+		add(Dim, "["+harnessLabel(s.Harness)+"]")
 	}
 
 	// Add git branch if present (show first, most useful)
 	if s.GitBranch != "" {
-		branch := sanitizeForTerminal(s.GitBranch)
-		branchRunes := []rune(branch)
-		if len(branchRunes) > 12 {
-			branchRunes = branchRunes[:12]
-			branch = string(branchRunes)
-		}
-		suffixes = append(suffixes, Dim+"@"+branch+Reset)
-		suffixLens = append(suffixLens, 1+len(branchRunes)) // @branch (visible rune count)
+		add(Dim, "@"+cutRunes(sanitizeForTerminal(s.GitBranch), 12))
 	}
 
 	// Add session title if present
 	if s.SessionTitle != "" {
-		title := sanitizeForTerminal(s.SessionTitle)
-		titleRunes := []rune(title)
-		if len(titleRunes) > 20 {
-			titleRunes = titleRunes[:20]
-			title = string(titleRunes)
-		}
-		suffixes = append(suffixes, Dim+"\""+title+"\""+Reset)
-		suffixLens = append(suffixLens, 2+len(titleRunes)) // "title" (visible rune count)
+		add(Dim, "\""+cutRunes(sanitizeForTerminal(s.SessionTitle), 20)+"\"")
 	}
 
 	// Ghost indicator (highest priority warning)
 	if s.IsGhost {
-		suffixes = append(suffixes, Red+"[ghost]"+Reset)
-		suffixLens = append(suffixLens, 7) // [ghost]
+		add(Red, "[ghost]")
 	}
 
 	// Incomplete data warning: this row's numbers are partly missing, so they
 	// must not read as measurements.
 	if s.Degraded != "" {
-		suffixes = append(suffixes, Yellow+"[?]"+Reset)
-		suffixLens = append(suffixLens, 3) // [?]
+		add(Yellow, "[?]")
 	}
 
 	// Unsandboxed indicator (security warning)
 	if s.HasUnsandboxed {
-		suffixes = append(suffixes, Yellow+"[!S]"+Reset)
-		suffixLens = append(suffixLens, 4) // [!S]
+		add(Yellow, "[!S]")
 	}
 
 	// Drop suffixes from the end until they fit, keeping at least 4 chars for the name

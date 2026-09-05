@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/yepzdk/claude-sessions-monitor/internal/session"
+)
 
 // `csm upgrade` and `csm update` used to start the dashboard: flag stops parsing
 // at the first non-flag argument, and nothing looked at what it left behind. The
@@ -46,5 +51,30 @@ func TestResolveArgsRejectsWhatItCannotRun(t *testing.T) {
 	}
 	if got := err.Error(); got != `upgrade takes no arguments, got "now"` {
 		t.Errorf("error = %q, which does not name the argument that is wrong", got)
+	}
+}
+
+// The harness filter (`f`, where the footer offers it) walks every agent and
+// then returns to showing all of them. A cycle that skips an agent, or never
+// comes back to "", leaves rows hidden with no key that brings them back.
+//
+// The agents are named here rather than read from session.Harnesses: deriving
+// the expectation from the same slice the code walks would pass even if an
+// agent were dropped from it.
+func TestHarnessFilterCyclesEveryAgentAndBackToAll(t *testing.T) {
+	var seen []session.Harness
+	current := session.Harness("")
+	for range len(session.Harnesses) + 1 {
+		current = nextHarnessFilter(current)
+		seen = append(seen, current)
+	}
+
+	for _, want := range []session.Harness{session.HarnessClaude, session.HarnessOMP} {
+		if !slices.Contains(seen, want) {
+			t.Errorf("the %q filter is unreachable: pressing f never selects it, so its rows cannot be brought back", want)
+		}
+	}
+	if last := seen[len(seen)-1]; last != "" {
+		t.Errorf("cycle ended at %q, want \"\": the filter never returns to showing every agent", last)
 	}
 }

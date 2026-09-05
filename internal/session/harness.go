@@ -29,6 +29,13 @@ const (
 	HarnessOMP Harness = "omp"
 )
 
+// Harnesses lists every coding agent csm knows, in the order surfaces should
+// offer them. A surface that enumerates agents reads this rather than spelling
+// the set again: the live view's filter cycles it, and an agent added here
+// becomes reachable there instead of gaining a badge it can never be filtered
+// to.
+var Harnesses = []Harness{HarnessClaude, HarnessOMP}
+
 // String names the harness for a human. The zero value has to read as
 // something, because it appears in the reason a ghost was not signalled.
 func (h Harness) String() string {

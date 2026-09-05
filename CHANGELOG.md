@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Watching an Oh My Pi session with a long log costs less CPU per refresh
+
+### Fixed
+
+- csm no longer re-parses a session's subagent logs on every refresh, so watching a session that runs agents costs less CPU
+
 ## [1.2.0] - 2026-09-04
 
 ### Added

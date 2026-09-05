@@ -31,12 +31,7 @@ func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFoot
 
 	// --- API Quota Section ---
 	width := getTerminalWidth()
-	sectionHeader := "API Quota (Anthropic account)"
-	separatorLen := width - 4 - len(sectionHeader) - 1
-	if separatorLen < 1 {
-		separatorLen = 1
-	}
-	fmt.Fprintf(&buf, "%s━━━ %s %s%s%s", Dim, sectionHeader, strings.Repeat("━", separatorLen), Reset, nl)
+	sectionRule(&buf, "API Quota (Anthropic account)", width, nl)
 
 	if apiQuota != nil && apiQuota.Available {
 		renderQuotaBucket(&buf, "5-hour", apiQuota.FiveHour, nl)
@@ -71,12 +66,7 @@ func RenderUsage(usage *session.UsageStats, apiQuota *session.APIQuota, showFoot
 	buf.WriteString(nl)
 
 	// --- Local Usage Section ---
-	sectionHeader = "Local Usage (5h window, Claude Code)"
-	separatorLen = width - 4 - len(sectionHeader) - 1
-	if separatorLen < 1 {
-		separatorLen = 1
-	}
-	fmt.Fprintf(&buf, "%s━━━ %s %s%s%s", Dim, sectionHeader, strings.Repeat("━", separatorLen), Reset, nl)
+	sectionRule(&buf, "Local Usage (5h window, Claude Code)", width, nl)
 
 	switch {
 	case usage != nil && usage.TotalTokens > 0:

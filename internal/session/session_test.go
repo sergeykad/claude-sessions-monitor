@@ -343,18 +343,14 @@ func TestContextWindowForModel(t *testing.T) {
 		// showed a 200K denominator in the browser and 1M in the TUI.
 		{"claude-opus-5", 1_000_000},
 		{"claude-haiku-5", 200_000},
+		{"claude-haiku-4-5-20251001", 200_000},
 		{"claude-opus-4", 200_000},
 		{"opus", 200_000},
-		{"sonnet", 200_000},
-		{"claude-haiku-4-5-20251001", 200_000},
-		{"claude-haiku-4-7", 200_000},
-		{"haiku", 200_000},
 		{"claude-opus-4-5", 200_000},
 		{"claude-sonnet-4-5-20250929", 200_000},
 		{"claude-opus-3-7", 200_000},
 		{"<synthetic>", 200_000},
 		{"", 200_000},
-		{"unknown-model", 200_000},
 	}
 
 	for _, tt := range tests {

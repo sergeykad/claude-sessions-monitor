@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCalcSessionLayout_WideTerminal(t *testing.T) {
@@ -141,6 +142,22 @@ func TestSectionRuleSurvivesATerminalNarrowerThanItsTitle(t *testing.T) {
 		}
 		if !strings.HasSuffix(got, "━\n") {
 			t.Errorf("width %d: no trailing rule drawn: %q", width, got)
+		}
+	}
+}
+
+// The divider fills exactly the width it is given. Counting the title in bytes
+// makes a multi-byte title over-subtract, so the rule comes up short and the
+// section header stops lining up with the rows under it.
+func TestSectionRuleFillsTheWidthWithAMultiByteTitle(t *testing.T) {
+	for _, title := range []string{"Local Usage", "Использование", "日本語の見出し"} {
+		const width = 60
+		var buf strings.Builder
+		sectionRule(&buf, title, width, "")
+
+		got := utf8.RuneCountInString(stripANSI(buf.String()))
+		if got != width {
+			t.Errorf("title %q drew %d columns, want %d", title, got, width)
 		}
 	}
 }

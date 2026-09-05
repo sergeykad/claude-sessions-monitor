@@ -64,7 +64,7 @@ func TestResolveArgsRejectsWhatItCannotRun(t *testing.T) {
 func TestHarnessFilterCyclesEveryAgentAndBackToAll(t *testing.T) {
 	var seen []session.Harness
 	current := session.Harness("")
-	for range len(session.Harnesses) + 1 {
+	for range len(session.Harnesses()) + 1 {
 		current = nextHarnessFilter(current)
 		seen = append(seen, current)
 	}

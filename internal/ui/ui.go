@@ -466,10 +466,9 @@ func cutRunes(s string, n int) string {
 
 // sectionRule writes a "━━━ Title ━━━━━" divider that fills the width. The
 // trailing run is what is left of width after the leading "━━━ ", the title and
-// one space, and never shrinks below one character on a narrow terminal. The
-// title is measured in bytes, which holds while every caller passes ASCII.
+// one space, and never shrinks below one character on a narrow terminal.
 func sectionRule(buf *strings.Builder, title string, width int, nl string) {
-	fill := width - 5 - len(title)
+	fill := width - 5 - utf8.RuneCountInString(title)
 	if fill < 1 {
 		fill = 1
 	}

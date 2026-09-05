@@ -70,6 +70,7 @@ func TestClassifyProcessIdentifiesAgents(t *testing.T) {
 		{"omp through bun", []string{"bun", "/Users/dev/.bun/bin/omp"}, HarnessOMP},
 		{"omp through bun with a runtime flag", []string{"bun", "--smol", "/Users/dev/.bun/bin/omp"}, HarnessOMP},
 		{"omp as its own binary", []string{"/opt/homebrew/bin/omp", "--resume"}, HarnessOMP},
+		{"omp with arguments", []string{"bun", "/Users/dev/.bun/bin/omp", "-c"}, HarnessOMP},
 		{"claude cli", []string{"/Users/dev/.local/bin/claude", "--resume"}, HarnessClaude},
 		{"claude cli without arguments", []string{"claude"}, HarnessClaude},
 	}

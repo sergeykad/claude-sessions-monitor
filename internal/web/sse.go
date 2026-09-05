@@ -103,14 +103,14 @@ func (h *SSEHub) Run(ctx context.Context, fatal chan<- error) {
 				h.broadcast(formatSSE("scan_error", []byte(`{"message":"session scan failed"}`)))
 				continue
 			}
-			harness, rows, err := sessionFrames(allSessions)
-			if harness != nil {
-				h.broadcast(harness)
+			frames, err := sessionFrames(allSessions)
+			for _, frame := range frames {
+				h.broadcast(frame)
 			}
 			if err != nil {
+				// The badge frame still went out; only the rows are missing.
 				continue
 			}
-			h.broadcast(rows)
 
 		case <-heartbeat.C:
 			h.broadcast(formatSSE("heartbeat", []byte("{}")))
@@ -118,18 +118,24 @@ func (h *SSEHub) Run(ctx context.Context, fatal chan<- error) {
 	}
 }
 
-// sessionFrames builds the pair of frames a session update is made of, in the
-// order they must be sent: the badge decision, then the rows it applies to.
-// Returning them together keeps the two senders from building the frames
-// differently. Each sender still writes the harness frame first.
-// A harness frame that fails to marshal comes back nil and is skipped.
-func sessionFrames(all []session.Session) (harness, sessions []byte, err error) {
-	harness = harnessEvent(all)
+// sessionFrames builds the frames a session update is made of, ready to send in
+// the order returned: the badge decision, then the rows it applies to. A sender
+// writes them in order and does not decide that order for itself, which is what
+// keeps the two senders from drifting.
+//
+// A frame that cannot be marshalled is absent rather than empty, so a sender
+// that writes everything returned always sends a well-formed stream. The error
+// reports that the rows are the missing one.
+func sessionFrames(all []session.Session) ([][]byte, error) {
+	var frames [][]byte
+	if harness := harnessEvent(all); harness != nil {
+		frames = append(frames, harness)
+	}
 	data, err := json.Marshal(filterLiveSessions(all))
 	if err != nil {
-		return harness, nil, err
+		return frames, err
 	}
-	return harness, formatSSE("sessions", data), nil
+	return append(frames, formatSSE("sessions", data)), nil
 }
 
 // harnessEvent renders the badge decision for these sessions as an SSE frame,
@@ -218,16 +224,13 @@ func (h *SSEHub) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// until the next broadcast two seconds later.
 	allSessions, err := discoverSessions()
 	if err == nil {
-		harness, rows, err := sessionFrames(allSessions)
-		if harness != nil {
-			_, _ = w.Write(harness)
-		}
-		if err == nil {
-			// A failed write means the client is already gone. Returning here
-			// would leave it registered with the hub, because the unregister
-			// defer is not set until below; the r.Context().Done() case takes
-			// it off moments later.
-			_, _ = w.Write(rows)
+		// A failed write means the client is already gone. Returning here would
+		// leave it registered with the hub, because the unregister defer is not
+		// set until below; the r.Context().Done() case takes it off moments
+		// later.
+		frames, _ := sessionFrames(allSessions)
+		for _, frame := range frames {
+			_, _ = w.Write(frame)
 		}
 		flusher.Flush()
 	}

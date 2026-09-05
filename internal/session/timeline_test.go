@@ -365,3 +365,32 @@ func TestParseTimelineFiltersByType(t *testing.T) {
 		t.Errorf("unknown-type total = %d, want 0", total)
 	}
 }
+
+// A fresh session has entries but no usage record yet. parseMetrics hands that
+// nil straight to contextUsage, so the guard there is what keeps the detail
+// panel's metrics request from panicking on every session that just started.
+func TestParseMetricsOnALogWithNoUsageEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "no-usage.jsonl")
+	writeLines(t, path, []string{
+		mustJSON(LogEntry{
+			Type:      "user",
+			Timestamp: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
+			Message:   &Message{Role: "user", Content: []ContentItem{{Type: "text", Text: "hello"}}},
+		}),
+		mustJSON(LogEntry{
+			Type:      "assistant",
+			Timestamp: time.Date(2025, 1, 1, 10, 0, 1, 0, time.UTC),
+			Message:   &Message{Role: "assistant", Model: "claude-opus-4-6", Content: []ContentItem{{Type: "text", Text: "Hi"}}},
+		}),
+	})
+
+	m, err := parseMetricsInternal(path)
+	if err != nil {
+		t.Fatalf("parseMetrics on a log with no usage: %v", err)
+	}
+	if m.ContextPercent != 0 || m.ContextTokens != 0 {
+		t.Errorf("context = %.2f%% of %d tokens, want both zero: nothing has reported usage yet",
+			m.ContextPercent, m.ContextTokens)
+	}
+}

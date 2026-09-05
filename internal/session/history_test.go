@@ -307,3 +307,37 @@ func TestDiscoverHistoryMarksSessionsWithUnreadableLogs(t *testing.T) {
 		t.Errorf("mark does not name the unreadable log: %q", sessions[0].Degraded)
 	}
 }
+
+// Subagent logs sit in the project directory next to real session logs and are
+// not sessions: a user never started them. DiscoverHistory delegates the rule
+// that recognises them to listLogsByRecency, so this guards the delegation. If
+// the skip stopped matching, a day of heavy agent use would read as dozens of
+// sessions nobody ever opened, each with its own row and duration.
+func TestDiscoverHistorySkipsSubagentLogs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := filepath.Join(home, ".claude", "projects", "-tmp-api")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := time.Now().Format(time.RFC3339Nano)
+	line := `{"type":"user","cwd":"/tmp/api","timestamp":"` + ts + `","message":{"content":"hello"}}` + "\n"
+	for _, name := range []string{"11111111-2222-3333-4444-555555555555.jsonl", "agent-abc.jsonl"} {
+		if err := os.WriteFile(filepath.Join(projectDir, name), []byte(line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sessions, err := DiscoverHistory(7)
+	if err != nil {
+		t.Fatalf("DiscoverHistory: %v", err)
+	}
+
+	if len(sessions) != 1 {
+		t.Fatalf("got %d rows, want 1: a subagent's log was listed as a session the user started", len(sessions))
+	}
+	if strings.Contains(sessions[0].LogFile, "agent-") {
+		t.Errorf("the row is the subagent log, not the session: %s", sessions[0].LogFile)
+	}
+}

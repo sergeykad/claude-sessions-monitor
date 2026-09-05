@@ -205,3 +205,67 @@ func TestParseAPIQuotaResponseReportsAParseFailureAsItsOwnCause(t *testing.T) {
 		t.Errorf("Reason = %q, want %q", quota.Reason, reasonParse)
 	}
 }
+
+// Every bucket the API sends must reach the panel with its own utilization and
+// reset time. Sharing one decode step across the four is what keeps them from
+// drifting, so this checks all four rather than a sample, and checks that a
+// bucket the response omits stays nil instead of showing as 0%.
+func TestParseAPIQuotaResponseFillsEveryBucketItWasSent(t *testing.T) {
+	quota := parseAPIQuotaResponse([]byte(`{
+		"five_hour":        {"utilization": 12.5, "resets_at": "2026-09-05T10:00:00Z"},
+		"seven_day":        {"utilization": 40,   "resets_at": "2026-09-11T10:00:00Z"},
+		"seven_day_sonnet": {"utilization": 55,   "resets_at": "2026-09-12T10:00:00Z"},
+		"extra_usage":      {"is_enabled": true}
+	}`))
+
+	if !quota.Available {
+		t.Fatalf("a well-formed response reported as unavailable: %q", quota.Error)
+	}
+
+	for _, tc := range []struct {
+		name string
+		got  *QuotaBucket
+		util float64
+		when string
+	}{
+		{"five_hour", quota.FiveHour, 12.5, "2026-09-05T10:00:00Z"},
+		{"seven_day", quota.SevenDay, 40, "2026-09-11T10:00:00Z"},
+		{"seven_day_sonnet", quota.SevenDaySonnet, 55, "2026-09-12T10:00:00Z"},
+	} {
+		if tc.got == nil {
+			t.Errorf("%s missing; the panel would show no bar for a quota the API reported", tc.name)
+			continue
+		}
+		if tc.got.Utilization != tc.util {
+			t.Errorf("%s utilization = %v, want %v", tc.name, tc.got.Utilization, tc.util)
+		}
+		if tc.got.ResetsAt == nil {
+			t.Errorf("%s reset time dropped; the panel would not say when the limit lifts", tc.name)
+			continue
+		}
+		if got := tc.got.ResetsAt.UTC().Format(time.RFC3339); got != tc.when {
+			t.Errorf("%s resets at %s, want %s", tc.name, got, tc.when)
+		}
+	}
+
+	if quota.SevenDayOpus != nil {
+		t.Error("a bucket the API did not send came back non-nil; the panel would draw it as 0% used")
+	}
+	if quota.ExtraUsage == nil || !quota.ExtraUsage.IsEnabled {
+		t.Error("extra usage flag lost")
+	}
+}
+
+// A reset time in a form time.Parse rejects must not cost the utilization too.
+func TestParseAPIQuotaResponseKeepsUtilizationWhenTheResetTimeIsUnreadable(t *testing.T) {
+	quota := parseAPIQuotaResponse([]byte(`{"five_hour":{"utilization":73,"resets_at":"tomorrow"}}`))
+	if quota.FiveHour == nil {
+		t.Fatal("bucket dropped over an unreadable reset time; the panel would show no usage at all")
+	}
+	if quota.FiveHour.Utilization != 73 {
+		t.Errorf("Utilization = %v, want 73", quota.FiveHour.Utilization)
+	}
+	if quota.FiveHour.ResetsAt != nil {
+		t.Error("an unparseable reset time came back as a real time")
+	}
+}

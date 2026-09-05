@@ -103,21 +103,39 @@ func (h *SSEHub) Run(ctx context.Context, fatal chan<- error) {
 				h.broadcast(formatSSE("scan_error", []byte(`{"message":"session scan failed"}`)))
 				continue
 			}
-			if frame := harnessEvent(allSessions); frame != nil {
+			frames, err := sessionFrames(allSessions)
+			for _, frame := range frames {
 				h.broadcast(frame)
 			}
-
-			live := filterLiveSessions(allSessions)
-			data, err := json.Marshal(live)
 			if err != nil {
+				// The badge frame still went out; only the rows are missing.
 				continue
 			}
-			h.broadcast(formatSSE("sessions", data))
 
 		case <-heartbeat.C:
 			h.broadcast(formatSSE("heartbeat", []byte("{}")))
 		}
 	}
+}
+
+// sessionFrames builds the frames a session update is made of, ready to send in
+// the order returned: the badge decision, then the rows it applies to. A sender
+// writes them in order and does not decide that order for itself, which is what
+// keeps the two senders from drifting.
+//
+// A frame that cannot be marshalled is absent rather than empty, so a sender
+// that writes everything returned always sends a well-formed stream. The error
+// reports that the rows are the missing one.
+func sessionFrames(all []session.Session) ([][]byte, error) {
+	var frames [][]byte
+	if harness := harnessEvent(all); harness != nil {
+		frames = append(frames, harness)
+	}
+	data, err := json.Marshal(filterLiveSessions(all))
+	if err != nil {
+		return frames, err
+	}
+	return append(frames, formatSSE("sessions", data)), nil
 }
 
 // harnessEvent renders the badge decision for these sessions as an SSE frame,
@@ -206,17 +224,13 @@ func (h *SSEHub) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// until the next broadcast two seconds later.
 	allSessions, err := discoverSessions()
 	if err == nil {
-		if frame := harnessEvent(allSessions); frame != nil {
+		// A failed write means the client is already gone. Returning here would
+		// leave it registered with the hub, because the unregister defer is not
+		// set until below; the r.Context().Done() case takes it off moments
+		// later.
+		frames, _ := sessionFrames(allSessions)
+		for _, frame := range frames {
 			_, _ = w.Write(frame)
-		}
-		live := filterLiveSessions(allSessions)
-		data, err := json.Marshal(live)
-		if err == nil {
-			// A failed write means the client is already gone. Returning here
-			// would leave it registered with the hub, because the unregister
-			// defer is not set until below; the r.Context().Done() case takes
-			// it off moments later.
-			_, _ = w.Write(formatSSE("sessions", data))
 		}
 		flusher.Flush()
 	}

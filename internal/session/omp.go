@@ -244,12 +244,22 @@ func parseOMPLogFileWithLimit(logFile string, keep int, maxLineBytes int) (ompPa
 			continue
 		}
 
-		decodeOMPEntry(&entry)
 		entries = append(entries, entry)
 	}
 
 	if len(entries) > keep {
-		entries = entries[len(entries)-keep:]
+		// Copied, not resliced: a reslice keeps the whole backing array alive,
+		// and the dropped entries still hold the raw payloads decodeOMPEntry
+		// would have cleared. pl goes into the parse cache, so that array would
+		// stay reachable for as long as the session is listed -- the size of the
+		// log rather than of keep.
+		entries = append([]ompEntry(nil), entries[len(entries)-keep:]...)
+	}
+	// Decoded after the trim, not in the scan loop: only the kept entries are
+	// read, and decoding during the scan costs a JSON parse per message body and
+	// per tool payload on the entries that are about to be dropped.
+	for i := range entries {
+		decodeOMPEntry(&entries[i])
 	}
 	pl.entries = entries
 	pl.lastMessage, pl.model = ompLastAssistant(entries)
@@ -389,14 +399,7 @@ func parseOMPSession(bucketName, cwd, logFile string, isRunning bool, pid int,
 		Harness:     HarnessOMP,
 	}
 
-	if cached, ok := LoadOrigin(session.SessionID); ok {
-		session.Origin = cached
-	} else if isRunning && pid > 0 {
-		if detected := DetectOrigin(pid); !detected.IsZero() {
-			session.Origin = detected
-			_ = SaveOrigin(session.SessionID, detected)
-		}
-	}
+	session.Origin = resolveOrigin(session.SessionID, isRunning, pid)
 
 	info, err := os.Stat(logFile)
 	if err != nil {
@@ -445,7 +448,7 @@ func applyOMPParsedLog(session *Session, pl ompParsedLog, isRunning bool, pid in
 		session.GhostPID = pid
 	}
 	session.Status, session.Task = determineOMPStatus(pl.entries, isRunning, fileModTime)
-	session.IsGhost = isRunning && orphaned && time.Since(session.LastActivity) > GhostThreshold
+	session.IsGhost = isGhost(isRunning, orphaned, session.LastActivity)
 }
 
 // determineOMPStatus decides an omp session's status, using the same four

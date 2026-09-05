@@ -293,3 +293,24 @@ func TestHistoryProjectCellMarksUnreadableLog(t *testing.T) {
 		t.Errorf("marked cell width = %d, want %d; the columns after it shift", visibleWidth(marked), width)
 	}
 }
+
+// The "(1M)" marker says a percentage is of a 1M window, not the 200K default.
+// It reads the decision the server already made, because deriving it a second
+// time is how the browser once showed 200K for a session the TUI showed as 1M.
+func TestContextBarMarksAnExtendedWindow(t *testing.T) {
+	extended := session.Session{
+		ContextTokens:  240000,
+		ContextPercent: 24,
+		Model:          "claude-opus-5",
+		ContextWindow:  session.ExtendedContextWindow,
+	}
+	if got := stripANSI(formatContext(extended, 30)); !strings.Contains(got, "(1M)") {
+		t.Errorf("context cell %q has no (1M) marker; 24%% of 1M reads as 24%% of 200K", got)
+	}
+
+	standard := extended
+	standard.ContextWindow = session.DefaultContextWindow
+	if got := stripANSI(formatContext(standard, 30)); strings.Contains(got, "(1M)") {
+		t.Errorf("context cell %q claims a 1M window for a 200K session", got)
+	}
+}

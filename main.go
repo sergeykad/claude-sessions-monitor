@@ -153,14 +153,17 @@ func resolveArgs(args []string) (upgrade bool, err error) {
 // started. A flag would also have had to mean something for the web dashboard,
 // which has no key to press to undo it and serves more than one client.
 func nextHarnessFilter(current session.Harness) session.Harness {
-	switch current {
-	case "":
-		return session.HarnessClaude
-	case session.HarnessClaude:
-		return session.HarnessOMP
-	default:
-		return ""
+	roster := session.Harnesses()
+	for i, h := range roster {
+		if h == current {
+			if i+1 < len(roster) {
+				return roster[i+1]
+			}
+			return ""
+		}
 	}
+	// "" and anything no longer in the roster both restart the cycle.
+	return roster[0]
 }
 
 // ViewMode represents the current display mode

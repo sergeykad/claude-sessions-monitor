@@ -114,3 +114,39 @@ func TestSaveOriginKeepsTheStoreDirectoryPrivate(t *testing.T) {
 		})
 	}
 }
+
+// resolveOrigin is the one place both producers decide where a session came
+// from, so its two rules are what keep the Origin column filled: a cached
+// origin wins, and detection runs only for a live process.
+//
+// A past session's process is gone, so it can only be classified from what was
+// cached while it ran. If the cache stopped winning, every past session's
+// origin would read as unknown.
+func TestResolveOriginPrefersTheCachedOriginForASessionThatHasStopped(t *testing.T) {
+	dir := t.TempDir()
+	originStoreDirFn = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { originStoreDirFn = defaultOriginStoreDir })
+
+	sid := "11111111-2222-3333-4444-555555555555"
+	want := Origin{Category: OriginTerminal, App: "ghostty", Display: "Ghostty"}
+	if err := SaveOrigin(sid, want); err != nil {
+		t.Fatalf("SaveOrigin: %v", err)
+	}
+
+	// Not running, no pid: detection cannot work, and must not be needed.
+	if got := resolveOrigin(sid, false, 0); got != want {
+		t.Errorf("resolveOrigin = %+v, want %+v: a stopped session lost the origin recorded while it ran", got, want)
+	}
+}
+
+// With nothing cached and no live process there is nothing to detect from, and
+// the zero Origin is what the column renders as unknown.
+func TestResolveOriginReturnsZeroWhenNothingIsCachedAndNothingIsRunning(t *testing.T) {
+	dir := t.TempDir()
+	originStoreDirFn = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { originStoreDirFn = defaultOriginStoreDir })
+
+	if got := resolveOrigin("99999999-0000-0000-0000-000000000000", false, 0); !got.IsZero() {
+		t.Errorf("resolveOrigin = %+v, want the zero Origin", got)
+	}
+}

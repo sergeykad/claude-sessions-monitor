@@ -1,6 +1,10 @@
 package ui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestCalcSessionLayout_WideTerminal(t *testing.T) {
 	l := calcSessionLayout(140, false)
@@ -120,5 +124,40 @@ func TestCalcHistoryLayout_NarrowTerminal(t *testing.T) {
 	expected := l.project + l.branch + l.startTime + l.duration + l.msgs + 4
 	if l.totalWidth != expected {
 		t.Errorf("expected totalWidth=%d, got %d", expected, l.totalWidth)
+	}
+}
+
+// A title longer than the terminal is wide leaves no room for the trailing run.
+// strings.Repeat panics on a negative count, and this divider is drawn by the
+// history and usage views, so an unclamped width would take the whole TUI down
+// on a narrow terminal rather than just drawing an ugly line.
+func TestSectionRuleSurvivesATerminalNarrowerThanItsTitle(t *testing.T) {
+	for _, width := range []int{0, 1, 5, 12} {
+		var buf strings.Builder
+		sectionRule(&buf, "Local Usage (5h window, Claude Code)", width, "\n")
+
+		got := stripANSI(buf.String())
+		if !strings.Contains(got, "Local Usage") {
+			t.Errorf("width %d: the title was lost from %q", width, got)
+		}
+		if !strings.HasSuffix(got, "━\n") {
+			t.Errorf("width %d: no trailing rule drawn: %q", width, got)
+		}
+	}
+}
+
+// The divider fills exactly the width it is given. Counting the title in bytes
+// makes a multi-byte title over-subtract, so the rule comes up short and the
+// section header stops lining up with the rows under it.
+func TestSectionRuleFillsTheWidthWithAMultiByteTitle(t *testing.T) {
+	for _, title := range []string{"Local Usage", "Использование", "日本語の見出し"} {
+		const width = 60
+		var buf strings.Builder
+		sectionRule(&buf, title, width, "")
+
+		got := utf8.RuneCountInString(stripANSI(buf.String()))
+		if got != width {
+			t.Errorf("title %q drew %d columns, want %d", title, got, width)
+		}
 	}
 }

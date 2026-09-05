@@ -68,12 +68,6 @@ type Session struct {
 	Subagents      []Subagent `json:"subagents,omitempty"`       // Live subagents spawned by this session
 }
 
-// RunningProcess represents a Claude process with its PID and working directory
-type RunningProcess struct {
-	PID int
-	Dir string // Encoded directory name
-}
-
 // LogEntry represents a single line in the JSONL log
 type LogEntry struct {
 	Type        string    `json:"type"`
@@ -459,6 +453,14 @@ func Discover() ([]Session, error) {
 			}
 			session.PIDConfident = pidConfident && session.GhostPID > 0
 
+			// discoverSubagents parsed each of these through the same cache.
+			// They are not in logFiles, so without this the prune below drops
+			// every subagent parse on the sweep that created it, and the next
+			// tick re-reads and re-decodes logs nothing has written to.
+			for _, sa := range session.Subagents {
+				liveFiles[sa.LogFile] = struct{}{}
+			}
+
 			sessions = append(sessions, session)
 		}
 	}
@@ -533,8 +535,9 @@ func statusPriority(s Status) int {
 // excluding logs from sessions that ended hours or days ago.
 const activeLogFreshnessWindow = 30 * time.Minute
 
-// logCandidate is one session log a directory holds, with the stat fields the
-// selection and the parse cache both need.
+// logCandidate is one session log a directory holds, with the stat fields its
+// consumers need: the active-log selection, the parse cache, and the history
+// view, which falls back to modTime for a log carrying no timestamps.
 type logCandidate struct {
 	path    string
 	modTime time.Time
@@ -776,18 +779,7 @@ func parseSession(projectName, logFile string, isRunning bool, pid int, orphaned
 		Harness:     HarnessClaude,
 	}
 
-	// Resolve the session's origin (terminal / IDE / Claude Desktop).
-	// Historical sessions can only be classified if we previously cached them
-	// while live, so we load from cache first and only detect when the process
-	// is still running and no cache entry exists.
-	if cached, ok := LoadOrigin(session.SessionID); ok {
-		session.Origin = cached
-	} else if isRunning && pid > 0 {
-		if detected := DetectOrigin(pid); !detected.IsZero() {
-			session.Origin = detected
-			_ = SaveOrigin(session.SessionID, detected)
-		}
-	}
+	session.Origin = resolveOrigin(session.SessionID, isRunning, pid)
 
 	// Get file modification time as fallback for last activity
 	info, err := os.Stat(logFile)
@@ -858,12 +850,9 @@ func applyParsedLog(session *Session, pl parsedLog, isRunning bool, pid int, orp
 		session.LastActivity = pl.lastEntryTime
 	}
 
-	// Derived last, once LastActivity has settled: a ghost is a live process
-	// nobody can reach anymore -- its parent is gone -- whose log has also
-	// stopped moving. Silence alone is not enough: a tab left open overnight
-	// is silent for hours and is not a ghost. determineStatus cannot decide
+	// Derived last, once LastActivity has settled: determineStatus cannot decide
 	// this because it runs before lastEntryTime is applied.
-	session.IsGhost = isRunning && orphaned && time.Since(session.LastActivity) > GhostThreshold
+	session.IsGhost = isGhost(isRunning, orphaned, session.LastActivity)
 }
 
 // extractLastAssistantMessage extracts the last text message from an assistant entry
@@ -953,18 +942,31 @@ func extractContextUsage(entries []LogEntry) (float64, int, string) {
 			continue
 		}
 
-		usage := entry.Message.Usage
-		totalTokens := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens + usage.OutputTokens
+		percent, totalTokens := contextUsage(entry.Message.Usage, entry.Message.Model)
 		if totalTokens == 0 {
 			continue
 		}
-
-		window := contextWindowForModel(entry.Message.Model)
-		percent := float64(totalTokens) / float64(window) * 100
 		return percent, totalTokens, entry.Message.Model
 	}
 
 	return 0, 0, ""
+}
+
+// contextUsage turns one usage record into the pair the views show: how full
+// the window is, and how many tokens that is. The session card and the detail
+// panel's metrics both report this for the same log, so they compute it here
+// rather than each summing the four fields against their own idea of the
+// window -- two copies is two numbers that can disagree about one session.
+func contextUsage(usage *Usage, model string) (percent float64, totalTokens int) {
+	if usage == nil {
+		return 0, 0
+	}
+	totalTokens = usage.InputTokens + usage.CacheCreationInputTokens +
+		usage.CacheReadInputTokens + usage.OutputTokens
+	if totalTokens == 0 {
+		return 0, 0
+	}
+	return float64(totalTokens) / float64(contextWindowForModel(model)) * 100, totalTokens
 }
 
 // decodeProjectName converts the directory name to a readable project name
@@ -1012,12 +1014,6 @@ const DefaultContextWindow = 200000
 // ExtendedContextWindow is the 1M context window available on Opus/Sonnet from
 // generation 4.6 onward.
 const ExtendedContextWindow = 1_000_000
-
-// ContextWindowForModel is the exported variant of contextWindowForModel,
-// for use by the UI layer to label the active context window.
-func ContextWindowForModel(model string) int {
-	return contextWindowForModel(model)
-}
 
 // contextWindowForModel returns the context window size for a given model ID.
 // Opus and Sonnet from generation 4.6 onward, plus the Claude 5 family
@@ -1076,6 +1072,16 @@ func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
 // longer to reap a true orphan costs some idle memory; reaping too early kills
 // work in progress.
 const GhostThreshold = time.Hour
+
+// isGhost reports whether a session's process is a ghost: alive, orphaned, and
+// silent past GhostThreshold. Both producers decide this, and both must mean
+// the same thing by it, so the rule lives here rather than in each of them.
+//
+// Callers apply it only once LastActivity has settled. Silence alone is not
+// enough: a tab left open overnight is silent for hours and is not a ghost.
+func isGhost(isRunning, orphaned bool, lastActivity time.Time) bool {
+	return isRunning && orphaned && time.Since(lastActivity) > GhostThreshold
+}
 
 // recentActivityWindow bounds every "Working" inference in determineStatus: a
 // tool result, user prompt, assistant message, or progress heartbeat only counts
@@ -1304,10 +1310,7 @@ func taskLabel(text string) string {
 	if idx := strings.Index(text, "\n"); idx > 0 {
 		text = text[:idx]
 	}
-	if runes := []rune(text); len(runes) > 50 {
-		return string(runes[:47]) + "..."
-	}
-	return text
+	return truncateString(text, 50)
 }
 
 // extractTask extracts a task description from an assistant entry

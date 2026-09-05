@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,20 @@ const (
 	// HarnessOMP is Oh My Pi, logging to ~/.omp/agent/sessions.
 	HarnessOMP Harness = "omp"
 )
+
+// harnesses is every coding agent csm knows, in the order surfaces offer them.
+var harnesses = []Harness{HarnessClaude, HarnessOMP}
+
+// Harnesses returns that list. A surface that enumerates agents calls this
+// rather than spelling the set again: the live view's filter cycles it, and an
+// agent added here becomes reachable there instead of gaining a badge it can
+// never be filtered to.
+//
+// A copy, so a caller cannot reorder or truncate the roster every other surface
+// reads.
+func Harnesses() []Harness {
+	return slices.Clone(harnesses)
+}
 
 // String names the harness for a human. The zero value has to read as
 // something, because it appears in the reason a ghost was not signalled.

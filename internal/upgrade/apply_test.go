@@ -184,3 +184,51 @@ func assertNoLeftovers(t *testing.T, dir string) {
 		}
 	}
 }
+
+// A release whose binary asset is missing or broken answers with a status, not
+// bytes. Apply must say which status, because "server returned 404 Not Found"
+// tells the user their platform's build is absent from the release while a
+// vaguer error sends them looking at their own machine. It must also leave no
+// half-written temporary file beside the binary it was going to replace.
+func TestApplyReportsTheServerStatusWhenTheBinaryIsNotServed(t *testing.T) {
+	_, rel := fakeRelease(t, csmLikeScript("v9.9.9"))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+BinaryName(), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/"+checksumsAsset, func(w http.ResponseWriter, _ *http.Request) {
+		sum := sha256.Sum256([]byte(csmLikeScript("v9.9.9")))
+		_, _ = io.WriteString(w, fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), BinaryName()))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	for i := range rel.Assets {
+		rel.Assets[i].URL = srv.URL + "/" + rel.Assets[i].Name
+	}
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "csm")
+	original := csmLikeScript("v0.1.0")
+	if err := os.WriteFile(exe, []byte(original), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	err := Apply(context.Background(), rel, exe, "v0.1.0", &out)
+	if err == nil {
+		t.Fatal("Apply() = nil, want an error: the binary was never downloaded")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error %q does not name the status, so the user cannot tell a missing build from a local problem", err)
+	}
+
+	got, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Error("the installed binary was replaced even though the download failed")
+	}
+	assertNoLeftovers(t, dir)
+}

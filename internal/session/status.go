@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -16,28 +15,12 @@ type ClaudeStatus struct {
 	Error       string `json:"error,omitempty"`
 }
 
-var claudeStatusCache struct {
-	sync.Mutex
-	result    *ClaudeStatus
-	fetchedAt time.Time
-}
-
-const claudeStatusCacheTTL = 60 * time.Second
+var claudeStatusCache = ttlCache[ClaudeStatus]{ttl: 60 * time.Second}
 
 // FetchClaudeStatus queries the Claude status page API for service health.
-// Results are cached for 60 seconds to avoid excessive API calls.
+// Results are cached; the TTL is on claudeStatusCache.
 func FetchClaudeStatus() *ClaudeStatus {
-	claudeStatusCache.Lock()
-	defer claudeStatusCache.Unlock()
-
-	if claudeStatusCache.result != nil && time.Since(claudeStatusCache.fetchedAt) < claudeStatusCacheTTL {
-		return claudeStatusCache.result
-	}
-
-	result := fetchClaudeStatusUncached()
-	claudeStatusCache.result = result
-	claudeStatusCache.fetchedAt = time.Now()
-	return result
+	return claudeStatusCache.get(fetchClaudeStatusUncached)
 }
 
 func fetchClaudeStatusUncached() *ClaudeStatus {

@@ -292,7 +292,7 @@ that shows counts needs the same.
 | `parseCache` / `ompParseCache` | log path; valid while `(mtime, size)` unchanged | skip re-parsing multi-MB logs every tick. One generic `cachedParse[T]` policy, two maps, because the formats parse into different shapes |
 | `processScanCache` | 2s | one read of the process table per tick, not per caller. Guarded by `processScanValid`, not a nil check: no agent running is a legitimate result |
 | `resultCache` | 1s | TUI loop, SSE hub and HTTP handlers collapse to one scan |
-| `apiQuotaCache` | 60s | the quota endpoint rate-limits hard |
+| `apiQuotaCache` | 60s | the quota endpoint rate-limits hard. One `ttlCache[T]` policy with `claudeStatusCache`, in `cache.go` |
 | `claudeStatusCache` | 60s | status page, fetched on demand only |
 
 All are package state. Tests that go through `Discover()` must reset them —
@@ -419,7 +419,9 @@ mapped into private-use runes (`KeyUp`, `KeyDown`) so the channel stays
 
 Reuse these instead of writing new ones:
 
-- `truncate` — rune-safe, appends `...`.
+- `truncate` — rune-safe, appends `...`. `cutRunes` is the same cut with no
+  ellipsis; its comment says when to use it.
+- `sectionRule` — the `━━━ Title ━━━` divider the history and usage views draw.
 - `sanitizeForTerminal` — strips control characters. Apply it to *every*
   string that came from a log or the filesystem; otherwise a session title can
   inject ANSI into the dashboard.
@@ -639,7 +641,8 @@ Fixture helpers already exist; use them rather than hand-rolling JSONL:
 
 Seams for the things you can't drive from a test: `listProcesses` (the process
 scan), `getProcessCwdFn`, `processArgvFn`, `processTerminalFn`, `procRoot`
-(procfs, Linux only), `browserCommand`, `originStoreDirFn`,
+(procfs, Linux only: the process scan and origin detection both read
+through it), `browserCommand`, `originStoreDirFn`,
 `parseLogFileWithLimit` / `parseOMPLogFileWithLimit` (trigger the oversized-line
 path without writing 10 MB), `web.discoverSessions`, and the
 `CSM_OMP_SESSIONS_DIR` env override (point omp discovery at a fixture tree).

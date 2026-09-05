@@ -130,20 +130,11 @@ func checksumFor(sums, name string) (string, error) {
 // download streams url into w and returns the hex SHA-256 of what was written.
 // Hashing as it streams avoids reading the binary back off disk.
 func download(ctx context.Context, url, version string, w io.Writer) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", userAgent(version))
-
-	resp, err := client.Do(req)
+	resp, err := get(ctx, url, version)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("server returned %s", resp.Status)
-	}
 
 	h := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxBinarySize)); err != nil {
@@ -154,6 +145,17 @@ func download(ctx context.Context, url, version string, w io.Writer) (string, er
 
 // fetch reads a small URL fully into memory.
 func fetch(ctx context.Context, url, version string, limit int64) ([]byte, error) {
+	resp, err := get(ctx, url, version)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// get issues the GET both readers share and returns a response whose status is
+// already known good. The caller closes the body.
+func get(ctx context.Context, url, version string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -164,9 +166,9 @@ func fetch(ctx context.Context, url, version string, limit int64) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("server returned %s", resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, limit))
+	return resp, nil
 }

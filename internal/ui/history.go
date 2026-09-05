@@ -88,11 +88,7 @@ func RenderHistory(sessions []session.HistorySession, days int, showFooter bool,
 
 		// Print date separator when group changes
 		if group != currentGroup {
-			separatorLen := l.totalWidth - 5 - len(group) // "━━━ " (4) + " " after group (1)
-			if separatorLen < 1 {
-				separatorLen = 1
-			}
-			fmt.Fprintf(&buf, "%s━━━ %s %s%s%s", Dim, group, strings.Repeat("━", separatorLen), Reset, nl)
+			sectionRule(&buf, group, l.totalWidth, nl)
 			currentGroup = group
 			rowsUsed++
 		}
